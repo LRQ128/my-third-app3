@@ -25,34 +25,36 @@ jobs:
           channel: 'stable'
           flutter-version: '3.19.0'
 
-      - name: Build Release APK
+      - name: Build APK
         run: |
-          set -e
-          echo "=== Step 1: Create fresh Flutter project ==="
+          set -ex
+          
+          echo "=== Flutter doctor ==="
+          flutter doctor -v
+          
+          echo "=== Create project ==="
           flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
           
-          echo "=== Step 2: Copy our code ==="
+          echo "=== Copy files ==="
           rm -rf /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
-          
-          echo "=== Step 3: Replace pubspec with ours ==="
           cp "${GITHUB_WORKSPACE}/pubspec.yaml" /tmp/ab/pubspec.yaml
           
-          echo "=== Step 4: Flutter pub get ==="
+          echo "=== pub get ==="
           cd /tmp/ab
-          flutter pub get 2>&1
+          flutter pub get 2>&1 || { echo "PUB GET FAILED"; exit 1; }
           
-          echo "=== Step 5: Build release APK ==="
-          flutter build apk --release 2>&1
+          echo "=== build ==="
+          flutter build apk --release 2>&1 || { echo "BUILD FAILED"; exit 1; }
           
-          echo "=== Step 6: Check APK ==="
-          ls -la /tmp/ab/build/app/outputs/flutter-apk/app-release.apk
+          echo "=== SUCCESS ==="
+          ls -la build/app/outputs/flutter-apk/
 
-      - name: Generate keystore and sign APK
+      - name: Sign APK
         run: |
           APK="/tmp/ab/build/app/outputs/flutter-apk/app-release.apk"
-          ls -la "$APK" || { echo "APK not found!"; exit 1; }
+          ls -la "$APK" || exit 1
           
           keytool -genkey -v \
             -keystore /tmp/release.jks \
@@ -64,9 +66,13 @@ jobs:
 
           APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
           if [ -z "$APKSIGNER" ]; then
-            APKSIGNER=$(find /usr/local/lib/android/sdk/build-tools -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
+            APKSIGNER=$(find /usr/local/lib/android -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
+          fi
+          if [ -z "$APKSIGNER" ]; then
+            APKSIGNER=$(find / -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
           fi
           echo "Using: $APKSIGNER"
+          ls -la "$APKSIGNER"
           
           "$APKSIGNER" sign \
             --ks /tmp/release.jks \
