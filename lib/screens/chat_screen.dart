@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'package:mime/mime.dart';
+import 'package:mime/mime.dart' show MediaType;
 import '../models/chat_message.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -279,7 +279,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final alignment = msg.isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start;
     final bgColor = msg.isUser
         ? theme.colorScheme.primary
-        : theme.colorScheme.surfaceContainerHighest;
+        : theme.colorScheme.surfaceVariant;
     final textColor = msg.isUser
         ? theme.colorScheme.onPrimary
         : theme.colorScheme.onSurface;
@@ -452,7 +452,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   borderSide: BorderSide.none,
                 ),
                 filled: true,
-                fillColor: theme.colorScheme.surfaceContainerHighest,
+                fillColor: theme.colorScheme.surfaceVariant,
                 contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               ),
               textInputAction: TextInputAction.send,
