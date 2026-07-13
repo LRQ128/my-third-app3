@@ -13,21 +13,28 @@ if (localPropertiesFile.exists()) {
 }
 
 def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
-if (flutterVersionCode == null) { flutterVersionCode = '1' }
+if (flutterVersionCode == null) {
+    flutterVersionCode = '1'
+}
 
 def flutterVersionName = localProperties.getProperty('flutter.versionName')
-if (flutterVersionName == null) { flutterVersionName = '1.0' }
+if (flutterVersionName == null) {
+    flutterVersionName = '1.0'
+}
 
 android {
     namespace "com.lrq128.my_third_app3"
     compileSdk 34
-    
+    ndkVersion flutter.ndkVersion
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
-    kotlinOptions { jvmTarget = '1.8' }
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
 
     sourceSets {
         main.java.srcDirs += 'src/main/kotlin'
@@ -49,5 +56,8 @@ android {
     }
 }
 
-flutter { source '../..' }
+flutter {
+    source '../..'
+}
+
 dependencies {}
