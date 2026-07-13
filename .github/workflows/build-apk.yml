@@ -5,13 +5,23 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+env:
+  PUB_HOSTED_URL: https://pub.flutter-io.cn
+  FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.x'
+          channel: 'stable'
+          cache: true
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -19,51 +29,38 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-          flutter-version: '3.19.0'
-
       - name: Build APK
         run: |
           set -ex
-          # Create fresh project with proper platform scaffolding
+          # Create fresh project with standard scaffolding
           flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
           
-          # Only replace lib/ and server/ (our custom code)
+          # Only replace our custom code
           rm -rf /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
           
-          # Add dependencies using flutter pub add (safe version resolution)
-          cd /tmp/ab
-          flutter pub add image_picker
-          flutter pub add http
-          flutter pub add path_provider
-          flutter pub add permission_handler
-          flutter pub add mime
+          # Use our pubspec.yaml (already has correct deps)
+          cp "${GITHUB_WORKSPACE}/pubspec.yaml" /tmp/ab/pubspec.yaml
           
-          # Build
+          cd /tmp/ab
+          flutter pub get
           flutter build apk --release
 
       - name: Sign APK
         run: |
           APK="/tmp/ab/build/app/outputs/flutter-apk/app-release.apk"
-          test -f "$APK" || { echo "APK not found!"; exit 1; }
+          test -f "$APK" || exit 1
           
           keytool -genkey -v \
             -keystore /tmp/release.jks \
             -alias my-third-app3 \
             -keyalg RSA -keysize 2048 -validity 36500 \
-            -storepass app123456 \
-            -keypass app123456 \
+            -storepass app123456 -keypass app123456 \
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
 
           APKSIGNER=$(ls -d ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
-          if [ -z "$APKSIGNER" ]; then
-            APKSIGNER=$(find /usr/local/lib/android -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
-          fi
+          [ -z "$APKSIGNER" ] && APKSIGNER=$(find /usr/local/lib/android -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
           
           "$APKSIGNER" sign \
             --ks /tmp/release.jks --ks-key-alias my-third-app3 \
