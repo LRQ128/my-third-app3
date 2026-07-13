@@ -1,0 +1,20 @@
+# Flutter
+.dart_tool/
+.packages
+build/
+*.iml
+.idea/
+.vscode/
+*.lock
+
+# Python
+__pycache__/
+*.pyc
+.env
+venv/
+.venv/
+
+# Misc
+.DS_Store
+*.jks
+*.log

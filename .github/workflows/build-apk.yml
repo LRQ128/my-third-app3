@@ -1,0 +1,83 @@
+name: Build Release APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: '3.19.0'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze code
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Generate keystore and sign APK
+        run: |
+          keytool -genkey -v \
+            -keystore android/app/release.jks \
+            -alias my-third-app3 \
+            -keyalg RSA -keysize 2048 -validity 36500 \
+            -storepass app123456 \
+            -keypass app123456 \
+            -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
+
+          $ANDROID_HOME/build-tools/35.0.0/apksigner sign \
+            --ks android/app/release.jks \
+            --ks-key-alias my-third-app3 \
+            --ks-pass pass:app123456 \
+            --key-pass pass:app123456 \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Verify APK signature
+        run: |
+          $ANDROID_HOME/build-tools/35.0.0/apksigner verify --verbose \
+            build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: AI修图 v${{ github.run_number }}
+          body: |
+            ## AI修图 App v${{ github.run_number }}
+            
+            自动构建发布版本
+            
+            ### 功能
+            - 📱 聊天式修图体验
+            - 🖼️ 选择图片后输入自然语言需求
+            - 🤖 自动调美图API处理
+            - ✂️ 抠图/换背景/去水印/滤镜/改字等
+            - 📊 实时显示积分消耗
+            
+            ### 使用说明
+            App需要配合后端服务使用，详情见 README
+          files: build/app/outputs/flutter-apk/app-release.apk
+          generate_release_notes: false
