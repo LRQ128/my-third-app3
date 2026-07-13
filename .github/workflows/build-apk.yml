@@ -28,33 +28,29 @@ jobs:
       - name: Build APK
         run: |
           set -ex
-          
-          echo "=== Flutter doctor ==="
           flutter doctor -v
           
-          echo "=== Create project ==="
+          # Generate fresh project with default pubspec
           flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
           
-          echo "=== Copy files ==="
+          # Replace ONLY lib/ - keep generated pubspec/android/ios etc
           rm -rf /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
-          cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
-          cp "${GITHUB_WORKSPACE}/pubspec.yaml" /tmp/ab/pubspec.yaml
           
-          echo "=== pub get ==="
+          # Add our custom dependencies using flutter pub add (safe version resolution)
           cd /tmp/ab
-          flutter pub get 2>&1 || { echo "PUB GET FAILED"; exit 1; }
+          flutter pub add image_picker
+          flutter pub add http
+          flutter pub add path_provider
+          flutter pub add permission_handler
+          flutter pub add mime
           
-          echo "=== build ==="
-          flutter build apk --release 2>&1 || { echo "BUILD FAILED"; exit 1; }
-          
-          echo "=== SUCCESS ==="
-          ls -la build/app/outputs/flutter-apk/
+          flutter build apk --release
 
       - name: Sign APK
         run: |
           APK="/tmp/ab/build/app/outputs/flutter-apk/app-release.apk"
-          ls -la "$APK" || exit 1
+          ls -la "$APK" || { echo "APK not found!"; find /tmp/ab/build -name "*.apk" 2>/dev/null; exit 1; }
           
           keytool -genkey -v \
             -keystore /tmp/release.jks \
@@ -68,12 +64,7 @@ jobs:
           if [ -z "$APKSIGNER" ]; then
             APKSIGNER=$(find /usr/local/lib/android -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
           fi
-          if [ -z "$APKSIGNER" ]; then
-            APKSIGNER=$(find / -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
-          fi
           echo "Using: $APKSIGNER"
-          ls -la "$APKSIGNER"
-          
           "$APKSIGNER" sign \
             --ks /tmp/release.jks \
             --ks-key-alias my-third-app3 \
@@ -83,7 +74,6 @@ jobs:
             --v2-signing-enabled true \
             --v3-signing-enabled true \
             "$APK"
-          
           "$APKSIGNER" verify --verbose "$APK"
 
       - name: Create Release
