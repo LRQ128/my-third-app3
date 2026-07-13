@@ -25,15 +25,29 @@ jobs:
           channel: 'stable'
           flutter-version: '3.19.0'
 
-      - name: Install dependencies
-        run: flutter pub get
+      - name: Generate Flutter scaffold (fix Android platform files)
+        run: |
+          # Create a temp project to get proper platform scaffolding
+          cd /tmp
+          flutter create --project-name my_third_app3 --org com.lrq128 temp_xiutu
+          ls temp_xiutu/android/
+
+      - name: Copy platform scaffolding into repo
+        run: |
+          # Replace android/ with properly generated one
+          rm -rf android/
+          cp -r /tmp/temp_xiutu/android/ android/
+          
+          # Keep our custom lib/ and server/ and CI config
+          # lib/ already pulled from git
+          
+          flutter pub get
 
       - name: Build release APK
         run: flutter build apk --release
 
       - name: Generate keystore and sign APK
         run: |
-          # 1. Generate keystore
           mkdir -p android/app
           keytool -genkey -v \
             -keystore android/app/release.jks \
@@ -47,28 +61,18 @@ jobs:
           echo "APK: $APK"
           ls -la "$APK"
 
-          # 2. Find apksigner - try all known paths
           APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
           
           if [ -z "$APKSIGNER" ]; then
-            echo "ANDROID_HOME=$ANDROID_HOME"
-            ls -la "${ANDROID_HOME}/build-tools/" 2>/dev/null || echo "No build-tools in ANDROID_HOME"
-            APKSIGNER=$(ls /usr/local/lib/android/sdk/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+            APKSIGNER=$(find /usr/local/lib/android/sdk/build-tools -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
           fi
           
           if [ -z "$APKSIGNER" ]; then
             APKSIGNER=$(find /usr/local -name "apksigner" -type f 2>/dev/null | head -1)
           fi
           
-          if [ -z "$APKSIGNER" ]; then
-            echo "ERROR: apksigner not found!"
-            ls -la /usr/local/lib/android/sdk/build-tools/ 2>/dev/null || true
-            exit 1
-          fi
-          
           echo "Using: $APKSIGNER"
           
-          # 3. Sign
           "$APKSIGNER" sign \
             --ks android/app/release.jks \
             --ks-key-alias my-third-app3 \
@@ -79,7 +83,6 @@ jobs:
             --v3-signing-enabled true \
             "$APK"
 
-          # 4. Verify
           "$APKSIGNER" verify --verbose "$APK"
 
       - name: Create Release

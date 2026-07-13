@@ -1,6 +1,5 @@
 include ':app'
 
-// Load local properties if available, otherwise use defaults
 def localPropertiesFile = new File(rootProject.projectDir, "local.properties")
 def properties = new Properties()
 if (localPropertiesFile.exists()) {
@@ -8,11 +7,13 @@ if (localPropertiesFile.exists()) {
 }
 
 def flutterSdkPath = properties.getProperty("flutter.sdk")
-if (flutterSdkPath == null) {
-    // In CI, Flutter SDK is set up by subosito/flutter-action
-    flutterSdkPath = System.getenv("FLUTTER_ROOT") ?: System.getenv("FLUTTER_HOME") ?: ""
+if (flutterSdkPath == null || flutterSdkPath.isEmpty()) {
+    flutterSdkPath = System.getenv("FLUTTER_ROOT")
+}
+if (flutterSdkPath == null || flutterSdkPath.isEmpty()) {
+    flutterSdkPath = System.getenv("FLUTTER_HOME")
 }
 
-if (flutterSdkPath) {
+if (flutterSdkPath != null && !flutterSdkPath.isEmpty()) {
     apply from: "$flutterSdkPath/packages/flutter_tools/gradle/app_plugin_loader.gradle"
 }
