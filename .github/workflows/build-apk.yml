@@ -25,56 +25,47 @@ jobs:
           channel: 'stable'
           flutter-version: '3.19.0'
 
-      - name: Generate Flutter scaffold (fix Android platform files)
+      - name: Build APK (fresh scaffold + our code)
         run: |
-          # Create a temp project to get proper platform scaffolding
+          # Create a fresh Flutter project
           cd /tmp
-          flutter create --project-name my_third_app3 --org com.lrq128 temp_xiutu
-          ls temp_xiutu/android/
-
-      - name: Copy platform scaffolding into repo
-        run: |
-          # Replace android/ with properly generated one
-          rm -rf android/
-          cp -r /tmp/temp_xiutu/android/ android/
+          flutter create --project-name my_third_app3 --org com.lrq128 --platforms android app_build
           
-          # Keep our custom lib/ and server/ and CI config
-          # lib/ already pulled from git
+          # Copy our custom files into it
+          rm -rf /tmp/app_build/lib/
+          cp -r "${GITHUB_WORKSPACE}/lib" /tmp/app_build/lib/
+          cp -r "${GITHUB_WORKSPACE}/server" /tmp/app_build/server/
+          cp "${GITHUB_WORKSPACE}/pubspec.yaml" /tmp/app_build/pubspec.yaml
+          cp "${GITHUB_WORKSPACE}/README.md" /tmp/app_build/README.md 2>/dev/null || true
+          cp "${GITHUB_WORKSPACE}/.gitignore" /tmp/app_build/.gitignore 2>/dev/null || true
           
+          # Build from the fresh project
+          cd /tmp/app_build
           flutter pub get
-
-      - name: Build release APK
-        run: flutter build apk --release
+          flutter build apk --release
 
       - name: Generate keystore and sign APK
         run: |
-          mkdir -p android/app
+          APK="/tmp/app_build/build/app/outputs/flutter-apk/app-release.apk"
+          echo "APK: $APK"
+          ls -la "$APK" || { echo "APK not found!"; exit 1; }
+          
           keytool -genkey -v \
-            -keystore android/app/release.jks \
+            -keystore /tmp/release.jks \
             -alias my-third-app3 \
             -keyalg RSA -keysize 2048 -validity 36500 \
             -storepass app123456 \
             -keypass app123456 \
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
 
-          APK="build/app/outputs/flutter-apk/app-release.apk"
-          echo "APK: $APK"
-          ls -la "$APK"
-
           APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
-          
           if [ -z "$APKSIGNER" ]; then
             APKSIGNER=$(find /usr/local/lib/android/sdk/build-tools -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
           fi
-          
-          if [ -z "$APKSIGNER" ]; then
-            APKSIGNER=$(find /usr/local -name "apksigner" -type f 2>/dev/null | head -1)
-          fi
-          
           echo "Using: $APKSIGNER"
           
           "$APKSIGNER" sign \
-            --ks android/app/release.jks \
+            --ks /tmp/release.jks \
             --ks-key-alias my-third-app3 \
             --ks-pass pass:app123456 \
             --key-pass pass:app123456 \
@@ -82,7 +73,7 @@ jobs:
             --v2-signing-enabled true \
             --v3-signing-enabled true \
             "$APK"
-
+          
           "$APKSIGNER" verify --verbose "$APK"
 
       - name: Create Release
@@ -98,5 +89,5 @@ jobs:
             - ✂️ 抠图、换背景、去水印、改字、滤镜
             - 🤖 后端集成美图API专业能力
             - 💳 显示积分消耗和剩余
-          files: build/app/outputs/flutter-apk/app-release.apk
+          files: /tmp/app_build/build/app/outputs/flutter-apk/app-release.apk
           generate_release_notes: false
