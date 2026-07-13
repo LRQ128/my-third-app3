@@ -25,24 +25,30 @@ jobs:
           channel: 'stable'
           flutter-version: '3.19.0'
 
-      - name: Build APK (fresh scaffold + our code)
+      - name: Build APK
         run: |
-          # Create a fresh Flutter project
+          set -e
+          # Create fresh project
           cd /tmp
           flutter create --project-name my_third_app3 --org com.lrq128 --platforms android app_build
           
-          # Copy our custom files into it
+          # Copy our custom code
           rm -rf /tmp/app_build/lib/
           cp -r "${GITHUB_WORKSPACE}/lib" /tmp/app_build/lib/
           cp -r "${GITHUB_WORKSPACE}/server" /tmp/app_build/server/
           cp "${GITHUB_WORKSPACE}/pubspec.yaml" /tmp/app_build/pubspec.yaml
-          cp "${GITHUB_WORKSPACE}/README.md" /tmp/app_build/README.md 2>/dev/null || true
-          cp "${GITHUB_WORKSPACE}/.gitignore" /tmp/app_build/.gitignore 2>/dev/null || true
+          cp "${GITHUB_WORKSPACE}/analysis_options.yaml" /tmp/app_build/analysis_options.yaml 2>/dev/null || true
           
-          # Build from the fresh project
+          # Show what we have
           cd /tmp/app_build
-          flutter pub get
-          flutter build apk --release
+          echo "=== pubspec ==="
+          head -30 pubspec.yaml
+          echo "=== lib files ==="
+          find lib -type f
+          echo "=== flutter pub get ==="
+          flutter pub get 2>&1
+          echo "=== flutter build ==="
+          flutter build apk --release 2>&1
 
       - name: Generate keystore and sign APK
         run: |
@@ -84,10 +90,6 @@ jobs:
           body: |
             ## AI修图 App v${{ github.run_number }}
             
-            ### 功能
-            - 📱 聊天式修图：发图片+打字需求，AI自动处理
-            - ✂️ 抠图、换背景、去水印、改字、滤镜
-            - 🤖 后端集成美图API专业能力
-            - 💳 显示积分消耗和剩余
+            自动构建发布版本
           files: /tmp/app_build/build/app/outputs/flutter-apk/app-release.apk
           generate_release_notes: false
