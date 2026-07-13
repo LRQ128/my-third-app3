@@ -5,22 +5,13 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
-env:
-  PUB_HOSTED_URL: https://pub.flutter-io.cn
-  FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
-
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-          flutter-version: '3.19.0'
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -28,10 +19,17 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: '3.19.0'
+
+      - name: Install dependencies
+        run: flutter pub get
+
       - name: Build release APK
-        run: |
-          flutter pub get
-          flutter build apk --release
+        run: flutter build apk --release
 
       - name: Generate keystore and sign APK
         run: |
@@ -46,7 +44,6 @@ jobs:
           if [ -z "$APKSIGNER" ]; then
             APKSIGNER=$(find /usr/local/lib/android -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
           fi
-          echo "Using: $APKSIGNER"
           "$APKSIGNER" sign \
             --ks android/app/release.jks --ks-key-alias my-third-app3 \
             --ks-pass pass:app123456 --key-pass pass:app123456 \
