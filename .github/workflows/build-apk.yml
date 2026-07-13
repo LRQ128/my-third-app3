@@ -31,6 +31,13 @@ jobs:
       - name: Analyze code
         run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
 
+      - name: Generate Gradle wrapper (required for CI)
+        run: flutter build apk --debug || true
+        # This generates gradlew and gradle wrapper files even if build partially fails
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
       - name: Build release APK
         run: flutter build apk --release
 
@@ -46,11 +53,9 @@ jobs:
 
       - name: Sign APK with apksigner
         run: |
-          # Find the latest build-tools version
-          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
-          APKSIGNER="${BUILD_TOOLS}apksigner"
-          echo "Using: $APKSIGNER"
-          $APKSIGNER sign \
+          APKSIGNER=$(find / -name "apksigner" -type f 2>/dev/null | head -1)
+          echo "Found apksigner at: $APKSIGNER"
+          "$APKSIGNER" sign \
             --ks android/app/release.jks \
             --ks-key-alias my-third-app3 \
             --ks-pass pass:app123456 \
@@ -62,9 +67,8 @@ jobs:
 
       - name: Verify APK signature
         run: |
-          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
-          APKSIGNER="${BUILD_TOOLS}apksigner"
-          $APKSIGNER verify --verbose \
+          APKSIGNER=$(find / -name "apksigner" -type f 2>/dev/null | head -1)
+          "$APKSIGNER" verify --verbose \
             build/app/outputs/flutter-apk/app-release.apk
 
       - name: Create Release
