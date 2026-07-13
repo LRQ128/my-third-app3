@@ -25,35 +25,38 @@ jobs:
           channel: 'stable'
           flutter-version: '3.19.0'
 
-      - name: Build APK
+      - name: Build Release APK
         run: |
-          set -e
-          # Create fresh project
           cd /tmp
           flutter create --project-name my_third_app3 --org com.lrq128 --platforms android app_build
-          
-          # Copy our custom code
-          rm -rf /tmp/app_build/lib/
-          cp -r "${GITHUB_WORKSPACE}/lib" /tmp/app_build/lib/
-          cp -r "${GITHUB_WORKSPACE}/server" /tmp/app_build/server/
-          cp "${GITHUB_WORKSPACE}/pubspec.yaml" /tmp/app_build/pubspec.yaml
-          cp "${GITHUB_WORKSPACE}/analysis_options.yaml" /tmp/app_build/analysis_options.yaml 2>/dev/null || true
-          
-          # Show what we have
           cd /tmp/app_build
-          echo "=== pubspec ==="
-          head -30 pubspec.yaml
-          echo "=== lib files ==="
-          find lib -type f
-          echo "=== flutter pub get ==="
+          
+          # Only replace lib/ and server/ - keep everything else from fresh project
+          rm -rf lib/ server/
+          cp -r "${GITHUB_WORKSPACE}/lib" lib/
+          cp -r "${GITHUB_WORKSPACE}/server" server/
+          
+          # Merge pubspec dependencies (add ours to generated one)
+          OUR_DEPS=$(grep -A 100 '^dependencies:' "${GITHUB_WORKSPACE}/pubspec.yaml" | grep -v '^dependencies:' | grep -B 100 '^dev_dependencies:' | grep -v '^dev_dependencies:' | grep -v '^flutter:' | sed '/^$/d')
+          echo "" >> pubspec.yaml
+          echo "# Custom dependencies" >> pubspec.yaml
+          echo "$OUR_DEPS" >> pubspec.yaml
+          
+          # Add assets section
+          echo "" >> pubspec.yaml
+          echo "flutter:" >> pubspec.yaml
+          echo "  uses-material-design: true" >> pubspec.yaml
+          echo "  assets:" >> pubspec.yaml
+          echo "    - assets/" >> pubspec.yaml
+          
+          cat pubspec.yaml
+          
           flutter pub get 2>&1
-          echo "=== flutter build ==="
           flutter build apk --release 2>&1
 
       - name: Generate keystore and sign APK
         run: |
           APK="/tmp/app_build/build/app/outputs/flutter-apk/app-release.apk"
-          echo "APK: $APK"
           ls -la "$APK" || { echo "APK not found!"; exit 1; }
           
           keytool -genkey -v \
@@ -65,9 +68,6 @@ jobs:
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
 
           APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
-          if [ -z "$APKSIGNER" ]; then
-            APKSIGNER=$(find /usr/local/lib/android/sdk/build-tools -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
-          fi
           echo "Using: $APKSIGNER"
           
           "$APKSIGNER" sign \
