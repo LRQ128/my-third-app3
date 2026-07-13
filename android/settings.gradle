@@ -1,22 +1,32 @@
+pluginManagement {
+    def flutterSdkPath = null
+    def localPropertiesFile = new File(rootProject.projectDir, "local.properties")
+    def properties = new Properties()
+
+    if (localPropertiesFile.exists()) {
+        localPropertiesFile.withReader("UTF-8") { reader -> properties.load(reader) }
+        flutterSdkPath = properties.getProperty("flutter.sdk")
+    }
+    if (flutterSdkPath == null || flutterSdkPath.isEmpty()) {
+        flutterSdkPath = System.getenv("FLUTTER_ROOT")
+    }
+    if (flutterSdkPath == null || flutterSdkPath.isEmpty()) {
+        flutterSdkPath = System.getenv("FLUTTER_HOME")
+    }
+
+    if (flutterSdkPath != null && !flutterSdkPath.isEmpty()) {
+        includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
+    }
+
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+plugins {
+    id "dev.flutter.flutter-plugin-loader" version "1.0.0"
+}
+
 include ':app'
-
-def localPropertiesFile = new File(rootProject.projectDir, "local.properties")
-def properties = new Properties()
-def flutterSdkPath = null
-
-if (localPropertiesFile.exists()) {
-    localPropertiesFile.withReader("UTF-8") { reader -> properties.load(reader) }
-    flutterSdkPath = properties.getProperty("flutter.sdk")
-}
-
-if (flutterSdkPath == null || flutterSdkPath.isEmpty()) {
-    flutterSdkPath = System.getenv("FLUTTER_ROOT")
-}
-
-if (flutterSdkPath == null || flutterSdkPath.isEmpty()) {
-    flutterSdkPath = System.getenv("FLUTTER_HOME")
-}
-
-if (flutterSdkPath != null && !flutterSdkPath.isEmpty()) {
-    apply from: "$flutterSdkPath/packages/flutter_tools/gradle/app_plugin_loader.gradle"
-}
