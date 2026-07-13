@@ -19,9 +19,8 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.x'
           channel: 'stable'
-          cache: true
+          flutter-version: '3.19.0'
 
       - name: Setup Java
         uses: actions/setup-java@v4
