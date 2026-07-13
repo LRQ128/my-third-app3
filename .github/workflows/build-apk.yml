@@ -31,18 +31,15 @@ jobs:
       - name: Analyze code
         run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
 
-      - name: Generate Gradle wrapper (required for CI)
+      - name: Generate Gradle wrapper
         run: flutter build apk --debug || true
-        # This generates gradlew and gradle wrapper files even if build partially fails
-
-      - name: Make gradlew executable
-        run: chmod +x android/gradlew
 
       - name: Build release APK
         run: flutter build apk --release
 
       - name: Generate keystore
         run: |
+          mkdir -p android/app
           keytool -genkey -v \
             -keystore android/app/release.jks \
             -alias my-third-app3 \
@@ -51,10 +48,15 @@ jobs:
             -keypass app123456 \
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
 
-      - name: Sign APK with apksigner
+      - name: Find and sign APK
         run: |
+          APK="build/app/outputs/flutter-apk/app-release.apk"
+          echo "Checking APK exists: $APK"
+          ls -la "$APK" || { echo "APK not found!"; find build -name "*.apk" 2>/dev/null; exit 1; }
+          
           APKSIGNER=$(find / -name "apksigner" -type f 2>/dev/null | head -1)
-          echo "Found apksigner at: $APKSIGNER"
+          echo "Found: $APKSIGNER"
+          
           "$APKSIGNER" sign \
             --ks android/app/release.jks \
             --ks-key-alias my-third-app3 \
@@ -63,7 +65,7 @@ jobs:
             --v1-signing-enabled true \
             --v2-signing-enabled true \
             --v3-signing-enabled true \
-            build/app/outputs/flutter-apk/app-release.apk
+            "$APK"
 
       - name: Verify APK signature
         run: |
