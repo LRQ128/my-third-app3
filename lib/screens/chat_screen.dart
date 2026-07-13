@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'package:mime/mime.dart' show MediaType;
+import 'package:mime/mime.dart';
 import '../models/chat_message.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -135,11 +135,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
       // Add image if available
       if (_pendingImage != null && _pendingImage!.existsSync()) {
-        final mimeType = lookupMimeType(_pendingImage!.path) ?? "image/jpeg";
         request.files.add(await http.MultipartFile.fromPath(
           "image",
           _pendingImage!.path,
-          contentType: MediaType.parse(mimeType),
         ));
       }
 
