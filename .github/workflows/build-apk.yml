@@ -34,7 +34,7 @@ jobs:
       - name: Build release APK
         run: flutter build apk --release
 
-      - name: Generate keystore and sign APK
+      - name: Generate keystore
         run: |
           keytool -genkey -v \
             -keystore android/app/release.jks \
@@ -44,7 +44,13 @@ jobs:
             -keypass app123456 \
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
 
-          $ANDROID_HOME/build-tools/35.0.0/apksigner sign \
+      - name: Sign APK with apksigner
+        run: |
+          # Find the latest build-tools version
+          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
+          APKSIGNER="${BUILD_TOOLS}apksigner"
+          echo "Using: $APKSIGNER"
+          $APKSIGNER sign \
             --ks android/app/release.jks \
             --ks-key-alias my-third-app3 \
             --ks-pass pass:app123456 \
@@ -56,7 +62,9 @@ jobs:
 
       - name: Verify APK signature
         run: |
-          $ANDROID_HOME/build-tools/35.0.0/apksigner verify --verbose \
+          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
+          APKSIGNER="${BUILD_TOOLS}apksigner"
+          $APKSIGNER verify --verbose \
             build/app/outputs/flutter-apk/app-release.apk
 
       - name: Create Release
