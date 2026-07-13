@@ -29,45 +29,31 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Build APK
+      - name: Build release APK
         run: |
-          set -ex
-          # Create fresh project with standard scaffolding
-          flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
-          
-          # Only replace our custom code
-          rm -rf /tmp/ab/lib/
-          cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
-          cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
-          
-          # Use our pubspec.yaml (already has correct deps)
-          cp "${GITHUB_WORKSPACE}/pubspec.yaml" /tmp/ab/pubspec.yaml
-          
-          cd /tmp/ab
           flutter pub get
           flutter build apk --release
 
-      - name: Sign APK
+      - name: Generate keystore and sign APK
         run: |
-          APK="/tmp/ab/build/app/outputs/flutter-apk/app-release.apk"
-          test -f "$APK" || exit 1
-          
           keytool -genkey -v \
-            -keystore /tmp/release.jks \
+            -keystore android/app/release.jks \
             -alias my-third-app3 \
             -keyalg RSA -keysize 2048 -validity 36500 \
             -storepass app123456 -keypass app123456 \
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
 
           APKSIGNER=$(ls -d ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
-          [ -z "$APKSIGNER" ] && APKSIGNER=$(find /usr/local/lib/android -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
-          
+          if [ -z "$APKSIGNER" ]; then
+            APKSIGNER=$(find /usr/local/lib/android -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
+          fi
+          echo "Using: $APKSIGNER"
           "$APKSIGNER" sign \
-            --ks /tmp/release.jks --ks-key-alias my-third-app3 \
+            --ks android/app/release.jks --ks-key-alias my-third-app3 \
             --ks-pass pass:app123456 --key-pass pass:app123456 \
             --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-            "$APK"
-          "$APKSIGNER" verify --verbose "$APK"
+            build/app/outputs/flutter-apk/app-release.apk
+          "$APKSIGNER" verify --verbose build/app/outputs/flutter-apk/app-release.apk
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -77,5 +63,5 @@ jobs:
           body: |
             ## AI修图 App v${{ github.run_number }}
             自动构建发布版本
-          files: /tmp/ab/build/app/outputs/flutter-apk/app-release.apk
+          files: build/app/outputs/flutter-apk/app-release.apk
           generate_release_notes: false
