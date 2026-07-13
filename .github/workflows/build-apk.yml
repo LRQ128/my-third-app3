@@ -25,37 +25,51 @@ jobs:
           channel: 'stable'
           flutter-version: '3.19.0'
 
-      - name: Build release APK
+      - name: Build APK
         run: |
-          flutter pub get
+          set -ex
+          # Create fresh project with proper platform scaffolding
+          flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
+          
+          # Only replace lib/ and server/ (our custom code)
+          rm -rf /tmp/ab/lib/
+          cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
+          cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
+          
+          # Add dependencies using flutter pub add (safe version resolution)
+          cd /tmp/ab
+          flutter pub add image_picker
+          flutter pub add http
+          flutter pub add path_provider
+          flutter pub add permission_handler
+          flutter pub add mime
+          
+          # Build
           flutter build apk --release
 
-      - name: Generate keystore and sign APK
+      - name: Sign APK
         run: |
-          APK="build/app/outputs/flutter-apk/app-release.apk"
-          ls -la "$APK"
+          APK="/tmp/ab/build/app/outputs/flutter-apk/app-release.apk"
+          test -f "$APK" || { echo "APK not found!"; exit 1; }
           
           keytool -genkey -v \
-            -keystore android/app/release.jks \
+            -keystore /tmp/release.jks \
             -alias my-third-app3 \
             -keyalg RSA -keysize 2048 -validity 36500 \
             -storepass app123456 \
             -keypass app123456 \
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
 
-          APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
-          echo "Using: $APKSIGNER"
+          APKSIGNER=$(ls -d ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          if [ -z "$APKSIGNER" ]; then
+            APKSIGNER=$(find /usr/local/lib/android -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
+          fi
           
           "$APKSIGNER" sign \
-            --ks android/app/release.jks \
-            --ks-key-alias my-third-app3 \
-            --ks-pass pass:app123456 \
-            --key-pass pass:app123456 \
-            --v1-signing-enabled true \
-            --v2-signing-enabled true \
-            --v3-signing-enabled true \
+            --ks /tmp/release.jks --ks-key-alias my-third-app3 \
+            --ks-pass pass:app123456 --key-pass pass:app123456 \
+            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
             "$APK"
-          
           "$APKSIGNER" verify --verbose "$APK"
 
       - name: Create Release
@@ -65,7 +79,6 @@ jobs:
           name: AI修图 v${{ github.run_number }}
           body: |
             ## AI修图 App v${{ github.run_number }}
-            
             自动构建发布版本
-          files: build/app/outputs/flutter-apk/app-release.apk
+          files: /tmp/ab/build/app/outputs/flutter-apk/app-release.apk
           generate_release_notes: false
