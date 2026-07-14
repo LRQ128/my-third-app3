@@ -3,8 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
-import 'package:mime/mime.dart';
 import '../models/chat_message.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -22,8 +20,8 @@ class _ChatScreenState extends State<ChatScreen> {
   File? _pendingImage;
   bool _isProcessing = false;
 
-  // Backend URL - configurable
-  String get _backendUrl => "http://10.0.2.2:5078"; // Android emulator -> host
+  // Backend URL - cloud server public address
+  String get _backendUrl => "http://1.95.104.67:5078";
 
   @override
   void initState() {

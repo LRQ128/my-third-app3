@@ -20,7 +20,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Config
-MEITU_CLI = os.path.expanduser("~/.npm-global/bin/meitu")
+MEITU_CLI = os.path.expanduser("/home/sandbox/.npm-global/bin/meitu")
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "xiutu_uploads"
 OUTPUT_DIR = Path(tempfile.gettempdir()) / "xiutu_outputs"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -159,14 +159,15 @@ def get_credit_remaining() -> dict:
     """Get remaining credits from Meitu"""
     try:
         result = subprocess.run(
-            [MEITU_CLI, "auth", "volume", "--json"],
+            [MEITU_CLI, "account", "overview", "--json"],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0:
             data = json.loads(result.stdout)
+            left = data.get("data", {}).get("credits_balance", 0)
             return {
                 "success": True,
-                "data": data
+                "data": {"left": left}
             }
         return {"success": False, "error": result.stderr}
     except Exception as e:
