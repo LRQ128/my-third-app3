@@ -1,21 +1,7 @@
-# Flutter
-.dart_tool/
-.packages
+node_modules/
+package-lock.json
 build/
-*.iml
+*.apk
 .idea/
 .vscode/
-*.lock
-
-# Python
-__pycache__/
-*.pyc
-.env
-venv/
-.venv/
-
-# Misc
-.DS_Store
-*.jks
-*.log
-# Build trigger 1783948732
+*.iml

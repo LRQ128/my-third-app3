@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: xiutu-backend
+    runtime: node
+    repo: https://github.com/LRQ128/my-third-app3
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    
+    envVars:
+      - key: MEITU_OPENAPI_ACCESS_KEY
+        value: e03f72b2874d45bb8d8e422ea05cca45
+      - key: MEITU_OPENAPI_SECRET_KEY
+        value: c050e28a3701410ca0b2e1cff2873625
+      - key: PORT
+        value: "5078"
+    
+    plan: free
