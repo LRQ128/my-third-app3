@@ -24,6 +24,10 @@ RUN npm install && npm cache clean --force
 # 复制服务端代码
 COPY server/ ./server/
 
+# 复制启动脚本
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
 # 环境变量
 ENV PORT=5078
 ENV NODE_ENV=production
@@ -36,4 +40,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD curl -f http://localhost:$PORT/api/health || exit 1
 
 # 启动命令
-CMD ["node", "server/index.js"]
+CMD ["bash", "/app/start.sh"]
