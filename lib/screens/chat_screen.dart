@@ -5,13 +5,11 @@ import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
 import '../models/chat_message.dart';
 
-// Zeabur backend – connect via IP directly (bypass system DNS),
-// use hostName for TLS SNI so Zeabur routes to our service.
+// Zeabur backend – TCP to IP + TLS upgrade with domain for SNI
 const String _kDomain = 'my-third-app3.zeabur.app';
 const String _kIp    = '43.131.228.126';
 const int    _kPort  = 443;
 
-/// Parse HTTP status from raw response bytes.
 int _httpStatus(List<int> raw) {
   for (int i = 0; i < raw.length - 3; i++) {
     if (raw[i]==13 && raw[i+1]==10 && raw[i+2]==13 && raw[i+3]==10) {
@@ -23,7 +21,6 @@ int _httpStatus(List<int> raw) {
   return 500;
 }
 
-/// Split HTTP body from raw response bytes.
 List<int> _httpBody(List<int> raw) {
   for (int i = 0; i < raw.length - 3; i++) {
     if (raw[i]==13 && raw[i+1]==10 && raw[i+2]==13 && raw[i+3]==10) return raw.sublist(i + 4);
@@ -31,7 +28,12 @@ List<int> _httpBody(List<int> raw) {
   return [];
 }
 
-/// POST multipart/form-data via raw TLS socket (bypasses DNS entirely).
+/// Connect via TCP to IP, then upgrade to TLS with domain for SNI.
+Future<SecureSocket> _connect() async {
+  final raw = await Socket.connect(_kIp, _kPort, timeout: const Duration(seconds: 15));
+  return SecureSocket.upgrade(raw, hostName: _kDomain, onBadCertificate: (_) => true);
+}
+
 Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
   final bd = 'BZ${DateTime.now().millisecondsSinceEpoch}Z';
   final buf = <int>[];
@@ -47,17 +49,11 @@ Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
   }
   w('--$bd--\r\n');
 
-  // Use hostName for TLS SNI (NOT 'host' – that's the wrong param name in 3.22.x)
-  final s = await SecureSocket.connect(
-    _kIp, _kPort,
-    hostName: _kDomain,
-    timeout: const Duration(seconds: 15),
-  );
+  final s = await _connect();
   try {
     s.add(utf8.encode('POST $path HTTP/1.1\r\nHost: $_kDomain\r\nContent-Type: multipart/form-data; boundary=$bd\r\nContent-Length: ${buf.length}\r\nConnection: close\r\n\r\n'));
     s.add(buf);
     await s.flush();
-
     final raw = <int>[];
     await for (final c in s) { raw.addAll(c); }
     if (_httpStatus(raw) != 200) return {'error': 'HTTP ${_httpStatus(raw)}'};
@@ -65,17 +61,11 @@ Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
   } finally { s.close(); }
 }
 
-/// GET raw bytes from a path on the Zeabur server (bypasses DNS).
 Future<Uint8List> _getBytes(String path) async {
-  final s = await SecureSocket.connect(
-    _kIp, _kPort,
-    hostName: _kDomain,
-    timeout: const Duration(seconds: 15),
-  );
+  final s = await _connect();
   try {
     s.add(utf8.encode('GET $path HTTP/1.1\r\nHost: $_kDomain\r\nConnection: close\r\n\r\n'));
     await s.flush();
-
     final raw = <int>[];
     await for (final c in s) { raw.addAll(c); }
     return Uint8List.fromList(_httpBody(raw));
@@ -122,44 +112,26 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       setState(() { _msgs.add(ChatMessage(text: '⏳ 正在调用美图API处理，请稍候...', isUser: false, time: DateTime.now(), isLoading: true)); });
       _scroll();
-
       final data = await _post('/api/edit', text, _pending);
       if (data.containsKey('error')) { _replace('❌ 处理失败：${data['error']}'); return; }
-
       final exp = data['explanation'] ?? '处理完成';
       final rp = data['result_image_url'];
       final tu = data['tool_used'];
       final cc = data['credit_consumed'];
       final cr = data['credit_remaining'];
-
       String r = '✅ $exp\n\n🔧 使用工具：$tu\n';
       if (cc != null) r += '💳 消耗积分：$cc\n';
       if (cr != null) r += '📊 剩余积分：$cr';
-
       if (rp != null && rp is String) {
         final bytes = await _getBytes(rp);
-        if (bytes.isNotEmpty) {
-          setState(() => _resultBytes = bytes);
-          _replace(r);
-        } else {
-          _replace('$r\n\n⚠️ 结果图片下载失败');
-        }
-      } else {
-        _replace('$r\n\n⚠️ 未返回处理结果图片');
-      }
-    } catch (e) {
-      _replace('❌ 网络错误：$e');
-    }
+        if (bytes.isNotEmpty) { setState(() => _resultBytes = bytes); _replace(r); }
+        else { _replace('$r\n\n⚠️ 结果图片下载失败'); }
+      } else { _replace('$r\n\n⚠️ 未返回处理结果图片'); }
+    } catch (e) { _replace('❌ 网络错误：$e'); }
     _scroll();
   }
 
-  void _replace(String t) {
-    setState(() {
-      if (_msgs.isNotEmpty && _msgs.last.isLoading) _msgs.removeLast();
-      _msgs.add(ChatMessage(text: t, isUser: false, time: DateTime.now()));
-    });
-  }
-
+  void _replace(String t) { setState(() { if (_msgs.isNotEmpty && _msgs.last.isLoading) _msgs.removeLast(); _msgs.add(ChatMessage(text: t, isUser: false, time: DateTime.now())); }); }
   void _err(String m) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m), behavior: SnackBarBehavior.floating)); }
 
   @override
@@ -186,13 +158,11 @@ class _ChatScreenState extends State<ChatScreen> {
         if (u && m.imagePath != null)
           Padding(padding: const EdgeInsets.only(bottom: 4), child: ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.file(File(m.imagePath!), width: 200, height: 200, fit: BoxFit.cover))),
         if (!u && _resultBytes != null)
-          Padding(padding: const EdgeInsets.only(bottom: 4), child: InkWell(
-              onTap: () => _full(),
+          Padding(padding: const EdgeInsets.only(bottom: 4), child: InkWell(onTap: () => _full(),
               child: ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.memory(_resultBytes!, width: 250, height: 250, fit: BoxFit.contain)))),
-        if (m.isLoading)
-          const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))),
+        if (m.isLoading) const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))),
         if (m.text.isNotEmpty)
-          Container(constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75), padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          Container(constraints: BoxConstraints(maxWidth: MediaQuery.of(c).size.width * 0.75), padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(color: u ? t.colorScheme.primary : t.colorScheme.surfaceVariant,
                   borderRadius: BorderRadius.circular(18).copyWith(bottomLeft: u ? const Radius.circular(18) : const Radius.circular(4), bottomRight: u ? const Radius.circular(4) : const Radius.circular(18))),
               child: Text(m.text, style: TextStyle(color: u ? t.colorScheme.onPrimary : t.colorScheme.onSurface, fontSize: 15))),
@@ -201,18 +171,15 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _preview() {
-    return Container(height: 80, color: Colors.grey[100], padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        child: Row(children: [
-          ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.file(_pending!, width: 60, height: 60, fit: BoxFit.cover)),
-          const SizedBox(width: 12),
-          Expanded(child: Text('已选择图片，输入修图需求后发送', style: TextStyle(color: Colors.grey[600], fontSize: 13))),
-        ]));
-  }
+  Widget _preview() { return Container(height: 80, color: Colors.grey[100], padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), child: Row(children: [
+    ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.file(_pending!, width: 60, height: 60, fit: BoxFit.cover)),
+    const SizedBox(width: 12),
+    Expanded(child: Text('已选择图片，输入修图需求后发送', style: TextStyle(color: Colors.grey[600], fontSize: 13))),
+  ])); }
 
   Widget _input(ThemeData t) {
     return Container(
-      padding: EdgeInsets.only(left: 8, right: 8, top: 8, bottom: MediaQuery.of(context).padding.bottom + 8),
+      padding: EdgeInsets.only(left: 8, right: 8, top: 8, bottom: MediaQuery.of(c).padding.bottom + 8),
       decoration: BoxDecoration(color: t.colorScheme.surface, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 4, offset: const Offset(0, -1))]),
       child: Row(children: [
         IconButton(icon: const Icon(Icons.image_outlined), color: t.colorScheme.primary, onPressed: _busy ? null : _pick),
