@@ -20,8 +20,8 @@ class _ChatScreenState extends State<ChatScreen> {
   File? _pendingImage;
   bool _isProcessing = false;
 
-  // Backend URL - cloud server public address
-  String get _backendUrl => "http://1.95.104.67:5078";
+  // Backend URL - Zeabur deployment
+  String get _backendUrl => "https://my-third-app3.zeabur.app";
 
   @override
   void initState() {
