@@ -49,7 +49,7 @@ jobs:
           flutter pub add permission_handler
           flutter pub add mime
           
-          flutter build apk --release
+          flutter build apk --release 2>&1 | tee /tmp/build.log; BUILD_EXIT=${PIPESTATUS[0]}; if [ $BUILD_EXIT -ne 0 ]; then echo '===== BUILD FAILED ====='; tail -80 /tmp/build.log; exit $BUILD_EXIT; fi
 
       - name: Sign APK
         run: |

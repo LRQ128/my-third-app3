@@ -2,9 +2,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'screens/chat_screen.dart';
 
-/// DNS bypass: hardcode the Zeabur IP for our backend.
-/// Domestic ISPs cannot resolve *.zeabur.app, so we intercept
-/// the lookup and return the actual IP directly.
+void main() {
+  HttpOverrides.global = _DnsOverride();
+  runApp(const MyApp());
+}
+
 class _DnsOverride extends HttpOverrides {
   @override
   Future<List<InternetAddress>> lookup(String host, InternetAddressType type) async {
@@ -13,11 +15,6 @@ class _DnsOverride extends HttpOverrides {
     }
     return super.lookup(host, type);
   }
-}
-
-void main() {
-  HttpOverrides.global = _DnsOverride();
-  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
