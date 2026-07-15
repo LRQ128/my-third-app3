@@ -5,7 +5,6 @@ import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
 import '../models/chat_message.dart';
 
-// Zeabur backend – TCP to IP + TLS upgrade with domain for SNI
 const String _kDomain = 'my-third-app3.zeabur.app';
 const String _kIp    = '43.131.228.126';
 const int    _kPort  = 443;
@@ -14,8 +13,7 @@ int _httpStatus(List<int> raw) {
   for (int i = 0; i < raw.length - 3; i++) {
     if (raw[i]==13 && raw[i+1]==10 && raw[i+2]==13 && raw[i+3]==10) {
       final h = utf8.decode(raw.sublist(0, i));
-      final p = h.split('\r\n')[0].split(' ');
-      return p.length > 1 ? int.tryParse(p[1]) ?? 500 : 500;
+      return h.split('\r\n')[0].split(' ').length > 1 ? int.tryParse(h.split('\r\n')[0].split(' ')[1]) ?? 500 : 500;
     }
   }
   return 500;
@@ -28,17 +26,20 @@ List<int> _httpBody(List<int> raw) {
   return [];
 }
 
-/// Connect via TCP to IP, then upgrade to TLS with domain for SNI.
+/// TCP to IP + TLS upgrade with SNI (no DNS needed).
 Future<SecureSocket> _connect() async {
   final raw = await Socket.connect(_kIp, _kPort, timeout: const Duration(seconds: 15));
-  return SecureSocket.upgrade(raw, hostName: _kDomain, onBadCertificate: (_) => true);
+  final tls = await RawSecureSocket.upgrade(raw, hostName: _kDomain, onBadCertificate: (_) => true);
+  // SecureSocket wraps RawSecureSocket with stream-based I/O. If it was already SecureSocket, return it.
+  if (tls is SecureSocket) return tls;
+  // Otherwise return as RawSecureSocket (SecureSocket subclass, works the same way)
+  return tls as SecureSocket;
 }
 
 Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
   final bd = 'BZ${DateTime.now().millisecondsSinceEpoch}Z';
   final buf = <int>[];
   void w(String s) => buf.addAll(utf8.encode(s));
-
   w('--$bd\r\nContent-Disposition: form-data; name="text"\r\n\r\n$text\r\n');
   if (img != null && img.existsSync()) {
     final ext = img.path.endsWith('.png') ? 'png' : 'jpeg';
@@ -48,7 +49,6 @@ Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
     w('\r\n');
   }
   w('--$bd--\r\n');
-
   final s = await _connect();
   try {
     s.add(utf8.encode('POST $path HTTP/1.1\r\nHost: $_kDomain\r\nContent-Type: multipart/form-data; boundary=$bd\r\nContent-Length: ${buf.length}\r\nConnection: close\r\n\r\n'));
@@ -89,7 +89,6 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() { super.initState(); _welcome(); }
   void _welcome() { setState(() { _msgs.add(ChatMessage(text: '👋 你好！发一张图片和你的修图需求给我，我来帮你处理！\n\n例如：\n• 「把背景换成海边」\n• 「帮我去掉水印」\n• 「把文字\'你好\'改成\'再见\'」\n• 「给我加个复古滤镜」\n• 「把这张图抠出来」', isUser: false, time: DateTime.now())); }); }
-
   void _scroll() { WidgetsBinding.instance.addPostFrameCallback((_) { if (_scrl.hasClients) _scrl.animateTo(_scrl.position.maxScrollExtent, duration: const Duration(milliseconds: 300), curve: Curves.easeOut); }); }
 
   Future<void> _pick() async {
@@ -138,19 +137,19 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() { _txt.dispose(); _scrl.dispose(); super.dispose(); }
 
   @override
-  Widget build(BuildContext c) {
-    final t = Theme.of(c);
+  Widget build(BuildContext context) {
+    final t = Theme.of(context);
     return Scaffold(
       appBar: AppBar(title: const Text('AI修图'), centerTitle: true, actions: [_pending != null ? IconButton(icon: const Icon(Icons.close), onPressed: () => setState(() => _pending = null)) : const SizedBox.shrink()]),
       body: Column(children: [
-        Expanded(child: _msgs.isEmpty ? const Center(child: Text('来开始修图吧！')) : ListView.builder(controller: _scrl, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), itemCount: _msgs.length, itemBuilder: (_, i) => _bubble(_msgs[i], t))),
+        Expanded(child: _msgs.isEmpty ? const Center(child: Text('来开始修图吧！')) : ListView.builder(controller: _scrl, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), itemCount: _msgs.length, itemBuilder: (ctx, i) => _bubble(_msgs[i], t, ctx))),
         if (_pending != null) _preview(),
         _input(t),
       ]),
     );
   }
 
-  Widget _bubble(ChatMessage m, ThemeData t) {
+  Widget _bubble(ChatMessage m, ThemeData t, BuildContext ctx) {
     final u = m.isUser;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
@@ -162,7 +161,7 @@ class _ChatScreenState extends State<ChatScreen> {
               child: ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.memory(_resultBytes!, width: 250, height: 250, fit: BoxFit.contain)))),
         if (m.isLoading) const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))),
         if (m.text.isNotEmpty)
-          Container(constraints: BoxConstraints(maxWidth: MediaQuery.of(c).size.width * 0.75), padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          Container(constraints: BoxConstraints(maxWidth: MediaQuery.of(ctx).size.width * 0.75), padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(color: u ? t.colorScheme.primary : t.colorScheme.surfaceVariant,
                   borderRadius: BorderRadius.circular(18).copyWith(bottomLeft: u ? const Radius.circular(18) : const Radius.circular(4), bottomRight: u ? const Radius.circular(4) : const Radius.circular(18))),
               child: Text(m.text, style: TextStyle(color: u ? t.colorScheme.onPrimary : t.colorScheme.onSurface, fontSize: 15))),
@@ -179,7 +178,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _input(ThemeData t) {
     return Container(
-      padding: EdgeInsets.only(left: 8, right: 8, top: 8, bottom: MediaQuery.of(c).padding.bottom + 8),
+      padding: EdgeInsets.only(left: 8, right: 8, top: 8, bottom: MediaQuery.of(context).padding.bottom + 8),
       decoration: BoxDecoration(color: t.colorScheme.surface, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 4, offset: const Offset(0, -1))]),
       child: Row(children: [
         IconButton(icon: const Icon(Icons.image_outlined), color: t.colorScheme.primary, onPressed: _busy ? null : _pick),
