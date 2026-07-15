@@ -23,14 +23,12 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } }); // 20MB max
 
-// Find meitu CLI
-const MEITU_CLI = process.env.MEITU_CLI_PATH || 
-  (() => {
-    try {
-      return execSync('which meitu || echo "./node_modules/.bin/meitu"', { encoding: 'utf8' }).trim();
-    } catch { return 'npx meitu'; }
-  })();
-
+// Find meitu CLI (graceful on startup)
+let MEITU_CLI = process.env.MEITU_CLI_PATH || 'npx meitu';
+try {
+  const found = execSync('which meitu 2>/dev/null || echo ""', { encoding: 'utf8', timeout: 5000 }).trim();
+  if (found) MEITU_CLI = found;
+} catch {}
 console.log('Meitu CLI:', MEITU_CLI);
 
 // Health check
