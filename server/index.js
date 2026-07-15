@@ -81,8 +81,12 @@ app.post('/api/edit', upload.single('image'), async (req, res) => {
 
     console.log(`Tool: ${toolName}, Image: ${file.filename}, Prompt: ${userText}`);
 
+    // Determine correct parameter name based on tool
+    const toolsRequiringImageUrl = ['image-background-replace', 'image-cutout', 'image-element-remove', 'image-text-replace'];
+    const imgParam = toolsRequiringImageUrl.includes(toolName) ? '--image_url' : '--image_list';
+
     // Call meitu CLI
-    const cmd = `${MEITU_CLI} ${toolName.replace(/_/g, '-')} --image_list "${file.path}" --prompt "${userText.replace(/"/g, '\\"')}" --download-dir "${downloadDir}" --json 2>&1`;
+    const cmd = `${MEITU_CLI} ${toolName.replace(/_/g, '-')} ${imgParam} "${file.path}" --prompt "${userText.replace(/"/g, '\\"')}" --download-dir "${downloadDir}" --json 2>&1`;
     
     exec(cmd, { timeout: 120000, maxBuffer: 50 * 1024 * 1024 }, (err, stdout, stderr) => {
       // Get post-credit
