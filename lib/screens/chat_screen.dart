@@ -5,15 +5,18 @@ import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
 import '../models/chat_message.dart';
 
+// Zeabur backend - connect via IP directly (no DNS needed),
+// send correct Host header for reverse proxy routing.
 const String _kDomain = 'my-third-app3.zeabur.app';
-const String _kIp    = '43.131.228.126';
-const int    _kPort  = 443;
+final InternetAddress _kIp = InternetAddress('43.131.228.126');
+const int    _kPort = 443;
 
 int _httpStatus(List<int> raw) {
   for (int i = 0; i < raw.length - 3; i++) {
     if (raw[i]==13 && raw[i+1]==10 && raw[i+2]==13 && raw[i+3]==10) {
       final h = utf8.decode(raw.sublist(0, i));
-      return h.split('\r\n')[0].split(' ').length > 1 ? int.tryParse(h.split('\r\n')[0].split(' ')[1]) ?? 500 : 500;
+      final p = h.split('\r\n')[0].split(' ');
+      return p.length > 1 ? int.tryParse(p[1]) ?? 500 : 500;
     }
   }
   return 500;
@@ -26,14 +29,11 @@ List<int> _httpBody(List<int> raw) {
   return [];
 }
 
-/// TCP to IP + TLS upgrade with SNI (no DNS needed).
+/// TLS to IP directly (bypasses system DNS), Host header routes via proxy.
 Future<SecureSocket> _connect() async {
-  final raw = await Socket.connect(_kIp, _kPort, timeout: const Duration(seconds: 15));
-  final tls = await RawSecureSocket.upgrade(raw, hostName: _kDomain, onBadCertificate: (_) => true);
-  // SecureSocket wraps RawSecureSocket with stream-based I/O. If it was already SecureSocket, return it.
-  if (tls is SecureSocket) return tls;
-  // Otherwise return as RawSecureSocket (SecureSocket subclass, works the same way)
-  return tls as SecureSocket;
+  return SecureSocket.connect(_kIp, _kPort,
+    onBadCertificate: (_) => true,
+    timeout: const Duration(seconds: 15));
 }
 
 Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
