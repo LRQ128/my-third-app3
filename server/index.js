@@ -76,13 +76,13 @@ app.post('/api/edit', upload.single('image'), async (req, res) => {
       toolName = 'image-cutout';
     } else if (t.includes('去水印') || t.includes('去掉') || t.includes('去除') || t.includes('消除') || t.includes('移除')) {
       toolName = 'image-element-remove';
-    } else if (t.includes('改字') || t.includes('改文字') || t.includes('替换文字') || t.includes('改成') || t.includes('改为') || t.includes('修改') || t.includes('替换')) {
+    } else if (t.includes('改字') || t.includes('改文字') || t.includes('替换文字') || t.includes('改成') || t.includes('改为') || t.includes('替换')) {
       toolName = 'image-text-replace';
-    } else if (t.includes('滤镜') || t.includes('美化') || t.includes('修图') || t.includes('编辑')) {
+    } else if (t.includes('滤镜') || t.includes('美化') || t.includes('编辑') || t.includes('清晰') || t.includes('高清') || t.includes('调高') || t.includes('锐化') || t.includes('增强') || t.includes('画质') || t.includes('清晰度')) {
       toolName = 'image-edit';
     } else {
-      // Default: text replacement (most common use case)
-      toolName = 'image-text-replace';
+      // Default: general image edit
+      toolName = 'image-edit';
     }
 
     console.log(`Tool: ${toolName}, Image: ${file.filename}, Prompt: ${userText}`);

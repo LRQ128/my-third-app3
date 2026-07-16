@@ -44,6 +44,7 @@ jobs:
           cd /tmp/ab
           flutter pub add image_picker http path_provider permission_handler mime
           flutter build apk --release
+          echo 'BUILD_EXIT_CODE='$?
 
       - name: Sign APK
         run: |
