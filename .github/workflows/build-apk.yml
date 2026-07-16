@@ -37,14 +37,13 @@ jobs:
           rm -rf /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
-
-          # Override AndroidManifest with our own (which has INTERNET + all permissions)
           cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
           
           cd /tmp/ab
-          flutter pub add image_picker http path_provider permission_handler mime
+          flutter pub add image_picker path_provider permission_handler mime
+          # http 1.2+ needs Dart >=3.5, Flutter 3.22 uses Dart 3.4, so pin http 1.1.0
+          flutter pub add http:1.1.0
           flutter build apk --release
-          echo 'BUILD_EXIT_CODE='$?
 
       - name: Sign APK
         run: |
