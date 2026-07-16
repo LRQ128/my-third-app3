@@ -35,14 +35,14 @@ jobs:
         run: |
           flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
           rm -rf /tmp/ab/lib/
-          cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
-          cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
+          rm -f /tmp/ab/pubspec.yaml
+          cp "${GITHUB_WORKSPACE}/lib" -r /tmp/ab/lib/
+          cp "${GITHUB_WORKSPACE}/server" -r /tmp/ab/server/
+          cp "${GITHUB_WORKSPACE}/pubspec_overlay/pubspec.yaml" /tmp/ab/pubspec.yaml
           cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
           
           cd /tmp/ab
-          flutter pub add image_picker path_provider permission_handler mime
-          # http 1.2+ needs Dart >=3.5, Flutter 3.22 uses Dart 3.4, so pin http 1.1.0
-          flutter pub add http:1.1.0
+          flutter pub get
           flutter build apk --release
 
       - name: Sign APK
