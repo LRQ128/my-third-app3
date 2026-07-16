@@ -1,78 +1,42 @@
-import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import '../models/chat_message.dart';
 
-// Backend: TCP to IP (no DNS) + TLS upgrade with SNI.
-const String _kDomain = 'ce.a2ne.com';
-final InternetAddress _kIp = InternetAddress('43.131.228.126');
-const int    _kPort = 443;
+const String _kBase = 'https://ce.a2ne.com';
 
-int _httpStatus(List<int> raw) {
-  for (int i = 0; i < raw.length - 3; i++) {
-    if (raw[i]==13 && raw[i+1]==10 && raw[i+2]==13 && raw[i+3]==10) {
-      final h = utf8.decode(raw.sublist(0, i));
-      final p = h.split('\r\n')[0].split(' ');
-      return p.length > 1 ? int.tryParse(p[1]) ?? 500 : 500;
-    }
+/// Test if we can make ANY network request (baidu always works in China).
+Future<String> _testNetwork() async {
+  try {
+    final res = await http.get(Uri.parse('https://www.baidu.com'))
+        .timeout(const Duration(seconds: 10));
+    return '百度: HTTP ${res.statusCode} ✅';
+  } catch (e) {
+    return '百度: $e ❌';
   }
-  return 500;
-}
-
-List<int> _httpBody(List<int> raw) {
-  for (int i = 0; i < raw.length - 3; i++) {
-    if (raw[i]==13 && raw[i+1]==10 && raw[i+2]==13 && raw[i+3]==10) return raw.sublist(i + 4);
-  }
-  return [];
-}
-
-/// TCP to IP (no DNS), then TLS upgrade with host: for SNI.
-Future<SecureSocket> _connect() async {
-  final raw = await Socket.connect(_kIp, _kPort,
-    timeout: const Duration(seconds: 15));
-  return SecureSocket.secure(raw,
-    host: _kDomain,
-    onBadCertificate: (_) => true,
-  );
 }
 
 Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
-  final bd = 'BZ${DateTime.now().millisecondsSinceEpoch}Z';
-  final buf = <int>[];
-  void w(String s) => buf.addAll(utf8.encode(s));
-  w('--$bd\r\nContent-Disposition: form-data; name="text"\r\n\r\n$text\r\n');
+  final uri = Uri.parse('$_kBase$path');
+  final req = http.MultipartRequest('POST', uri)
+    ..fields['text'] = text;
   if (img != null && img.existsSync()) {
-    final ext = img.path.endsWith('.png') ? 'png' : 'jpeg';
-    final d = await img.readAsBytes();
-    w('--$bd\r\nContent-Disposition: form-data; name="image"; filename="image.$ext"\r\nContent-Type: image/$ext\r\n\r\n');
-    buf.addAll(d);
-    w('\r\n');
+    req.files.add(await http.MultipartFile.fromPath('image', img.path));
   }
-  w('--$bd--\r\n');
-  final s = await _connect();
-  try {
-    s.add(utf8.encode('POST $path HTTP/1.1\r\nHost: $_kDomain\r\nContent-Type: multipart/form-data; boundary=$bd\r\nContent-Length: ${buf.length}\r\nConnection: close\r\n\r\n'));
-    s.add(buf);
-    await s.flush();
-    final raw = <int>[];
-    await for (final c in s) { raw.addAll(c); }
-    if (_httpStatus(raw) != 200) return {'error': 'HTTP ${_httpStatus(raw)}'};
-    return jsonDecode(utf8.decode(_httpBody(raw))) as Map<String, dynamic>;
-  } finally { s.close(); }
+  final res = await req.send().timeout(const Duration(seconds: 60));
+  final body = await res.stream.bytesToString();
+  if (res.statusCode != 200) return {'error': 'HTTP ${res.statusCode}: $body'};
+  return jsonDecode(body) as Map<String, dynamic>;
 }
 
 Future<Uint8List> _getBytes(String url) async {
-  final s = await _connect();
-  try {
-    final u = url.startsWith('http') ? Uri.parse(url).path : url;
-    s.add(utf8.encode('GET $u HTTP/1.1\r\nHost: $_kDomain\r\nConnection: close\r\n\r\n'));
-    await s.flush();
-    final raw = <int>[];
-    await for (final c in s) { raw.addAll(c); }
-    return Uint8List.fromList(_httpBody(raw));
-  } finally { s.close(); }
+  final uri = Uri.parse(url.startsWith('http') ? url : '$_kBase$url');
+  final res = await http.get(uri).timeout(const Duration(seconds: 60));
+  if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
+  return res.bodyBytes;
 }
 
 class ChatScreen extends StatefulWidget {
@@ -106,31 +70,36 @@ class _ChatScreenState extends State<ChatScreen> {
     final t = _txt.text.trim();
     if (t.isEmpty && _pending == null) return;
     setState(() { _busy = true; _msgs.add(ChatMessage(text: t, isUser: true, time: DateTime.now(), imagePath: _pending?.path)); });
-    _txt.clear(); _scroll(); await _proc(t);
-    setState(() { _pending = null; _busy = false; });
-  }
-
-  Future<void> _proc(String text) async {
-    try {
-      setState(() { _msgs.add(ChatMessage(text: '⏳ 正在调用美图API处理，请稍候...', isUser: false, time: DateTime.now(), isLoading: true)); });
+    _txt.clear(); _scroll();
+    
+    // Test network first, then process image
+    if (_pending != null) {
+      final netTest = await _testNetwork();
+      setState(() { _msgs.add(ChatMessage(text: '📡 网络诊断：\n$netTest', isUser: false, time: DateTime.now())); });
       _scroll();
-      final data = await _post('/api/edit', text, _pending);
-      if (data.containsKey('error')) { _replace('❌ 处理失败：${data['error']}'); return; }
-      final exp = data['explanation'] ?? '处理完成';
-      final rp = data['result_image_url'];
-      final tu = data['tool_used'];
-      final cc = data['credit_consumed'];
-      final cr = data['credit_remaining'];
-      String r = '✅ $exp\n\n🔧 使用工具：$tu\n';
-      if (cc != null) r += '💳 消耗积分：$cc\n';
-      if (cr != null) r += '📊 剩余积分：$cr';
-      if (rp != null && rp is String) {
-        final bytes = await _getBytes(rp);
-        if (bytes.isNotEmpty) { setState(() => _resultBytes = bytes); _replace(r); }
-        else { _replace('$r\n\n⚠️ 结果图片下载失败'); }
-      } else { _replace('$r\n\n⚠️ 未返回处理结果图片'); }
-    } catch (e) { _replace('❌ 网络错误：$e'); }
-    _scroll();
+      
+      // Then try our server
+      try {
+        setState(() { _msgs.add(ChatMessage(text: '⏳ 正在连接到 ce.a2ne.com...', isUser: false, time: DateTime.now(), isLoading: true)); });
+        _scroll();
+        
+        final uri = Uri.parse('$_kBase/api/edit');
+        final req = http.MultipartRequest('POST', uri)
+          ..fields['text'] = t;
+        if (_pending != null && _pending!.existsSync()) {
+          req.files.add(await http.MultipartFile.fromPath('image', _pending!.path));
+        }
+        final res = await req.send().timeout(const Duration(seconds: 30));
+        final body = await res.stream.bytesToString();
+        
+        _replace('📡 后端连接：\nHTTP ${res.statusCode}\n响应：${body.substring(0, body.length.clamp(0, 200))}');
+      } catch (e) {
+        _replace('📡 后端连接：\n❌ $e');
+      }
+    } else {
+      setState(() { _msgs.add(ChatMessage(text: t, isUser: true, time: DateTime.now())); });
+    }
+    setState(() { _pending = null; _busy = false; });
   }
 
   void _replace(String t) { setState(() { if (_msgs.isNotEmpty && _msgs.last.isLoading) _msgs.removeLast(); _msgs.add(ChatMessage(text: t, isUser: false, time: DateTime.now())); }); }
