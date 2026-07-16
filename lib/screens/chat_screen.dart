@@ -5,8 +5,7 @@ import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
 import '../models/chat_message.dart';
 
-// Zeabur backend - connect via IP directly (no DNS needed),
-// send correct Host header for reverse proxy routing.
+// Zeabur backend: TCP to IP (no DNS) + TLS upgrade with hostname for SNI.
 const String _kDomain = 'my-third-app3.zeabur.app';
 final InternetAddress _kIp = InternetAddress('43.131.228.126');
 const int    _kPort = 443;
@@ -29,11 +28,14 @@ List<int> _httpBody(List<int> raw) {
   return [];
 }
 
-/// TLS to IP directly (bypasses system DNS), Host header routes via proxy.
+/// TCP to IP (no DNS), TLS upgrade with SNI hostname for Android 14+.
 Future<SecureSocket> _connect() async {
-  return SecureSocket.connect(_kIp, _kPort,
-    onBadCertificate: (_) => true,
+  final raw = await Socket.connect(_kIp, _kPort,
     timeout: const Duration(seconds: 15));
+  return SecureSocket.upgrade(raw,
+    hostname: _kDomain,
+    onBadCertificate: (_) => true,
+  );
 }
 
 Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
