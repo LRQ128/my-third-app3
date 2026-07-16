@@ -21,14 +21,14 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 3.22.x
-          channel: stable
+          flutter-version: '3.22.x'
+          channel: 'stable'
           cache: true
 
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: zulu
+          distribution: 'zulu'
           java-version: '17'
 
       - name: Build APK
@@ -37,9 +37,12 @@ jobs:
           rm -rf /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
+
+          # Override AndroidManifest with our own (which has INTERNET + all permissions)
           cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
+          
           cd /tmp/ab
-          flutter pub add image_picker path_provider permission_handler
+          flutter pub add image_picker http path_provider permission_handler mime
           flutter build apk --release
 
       - name: Sign APK
