@@ -58,7 +58,13 @@ Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
     await s.flush();
     final raw = <int>[];
     await for (final c in s) { raw.addAll(c); }
-    if (_httpStatus(raw) != 200) return {'error': 'HTTP ${_httpStatus(raw)}'};
+    final status = _httpStatus(raw);
+    if (status != 200) {
+      final body = utf8.decode(_httpBody(raw));
+      String detail = '';
+      try { final j = jsonDecode(body); detail = j['error'] ?? j.toString(); } catch (_) { detail = body.length > 200 ? body.substring(0, 200) : body; }
+      return {'error': 'HTTP $status: $detail'};
+    }
     return jsonDecode(utf8.decode(_httpBody(raw))) as Map<String, dynamic>;
   } finally { s.close(); }
 }
