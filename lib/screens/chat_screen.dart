@@ -3,209 +3,169 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
+import 'package:http/http.dart' as http;
 import '../models/chat_message.dart';
 
-// Backend: TCP to IP (no DNS) + TLS upgrade with SNI.
-const String _kDomain = 'ce.a2ne.com';
-final InternetAddress _kIp = InternetAddress('43.131.228.126');
-const int    _kPort = 443;
-
-int _httpStatus(List<int> raw) {
-  for (int i = 0; i < raw.length - 3; i++) {
-    if (raw[i]==13 && raw[i+1]==10 && raw[i+2]==13 && raw[i+3]==10) {
-      final h = utf8.decode(raw.sublist(0, i));
-      final p = h.split('\r\n')[0].split(' ');
-      return p.length > 1 ? int.tryParse(p[1]) ?? 500 : 500;
-    }
-  }
-  return 500;
-}
-
-List<int> _httpBody(List<int> raw) {
-  for (int i = 0; i < raw.length - 3; i++) {
-    if (raw[i]==13 && raw[i+1]==10 && raw[i+2]==13 && raw[i+3]==10) return raw.sublist(i + 4);
-  }
-  return [];
-}
-
-/// TCP to IP (no DNS), then TLS upgrade with host: for SNI.
-Future<SecureSocket> _connect() async {
-  final raw = await Socket.connect(_kIp, _kPort,
-    timeout: const Duration(seconds: 15));
-  return SecureSocket.secure(raw,
-    host: _kDomain,
-    onBadCertificate: (_) => true,
-  );
-}
-
-Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
-  final bd = 'BZ${DateTime.now().millisecondsSinceEpoch}Z';
-  final buf = <int>[];
-  void w(String s) => buf.addAll(utf8.encode(s));
-  w('--$bd\r\nContent-Disposition: form-data; name="text"\r\n\r\n$text\r\n');
-  if (img != null && img.existsSync()) {
-    final ext = img.path.endsWith('.png') ? 'png' : 'jpeg';
-    final d = await img.readAsBytes();
-    w('--$bd\r\nContent-Disposition: form-data; name="image"; filename="image.$ext"\r\nContent-Type: image/$ext\r\n\r\n');
-    buf.addAll(d);
-    w('\r\n');
-  }
-  w('--$bd--\r\n');
-  final s = await _connect();
-  try {
-    s.add(utf8.encode('POST $path HTTP/1.1\r\nHost: $_kDomain\r\nContent-Type: multipart/form-data; boundary=$bd\r\nContent-Length: ${buf.length}\r\nConnection: close\r\n\r\n'));
-    s.add(buf);
-    await s.flush();
-    final raw = <int>[];
-    await for (final c in s) { raw.addAll(c); }
-    final status = _httpStatus(raw);
-    if (status != 200) {
-      final body = utf8.decode(_httpBody(raw));
-      String detail = '';
-      try { final j = jsonDecode(body); detail = j['error'] ?? j.toString(); } catch (_) { detail = body.length > 200 ? body.substring(0, 200) : body; }
-      return {'error': 'HTTP $status: $detail'};
-    }
-    return jsonDecode(utf8.decode(_httpBody(raw))) as Map<String, dynamic>;
-  } finally { s.close(); }
-}
-
-Future<Uint8List> _getBytes(String url) async {
-  final s = await _connect();
-  try {
-    final u = url.startsWith('http') ? Uri.parse(url).path : url;
-    s.add(utf8.encode('GET $u HTTP/1.1\r\nHost: $_kDomain\r\nConnection: close\r\n\r\n'));
-    await s.flush();
-    final raw = <int>[];
-    await for (final c in s) { raw.addAll(c); }
-    return Uint8List.fromList(_httpBody(raw));
-  } finally { s.close(); }
-}
+const String _kUrl = 'https://ce.a2ne.com';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
-  @override State<ChatScreen> createState() => _ChatScreenState();
+
+  @override
+  State<ChatScreen> createState() => _ChatScreenState();
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  final List<ChatMessage> _msgs = [];
-  final TextEditingController _txt = TextEditingController();
-  final ScrollController _scrl = ScrollController();
-  final ImagePicker _picker = ImagePicker();
-  File? _pending;
-  bool _busy = false;
+  final TextEditingController _textCtl = TextEditingController();
+  final List<ChatMessage> _messages = [];
+  XFile? _selected;
   Uint8List? _resultBytes;
+  bool _busy = false;
 
   @override
-  void initState() { super.initState(); _welcome(); }
-  void _welcome() { setState(() { _msgs.add(ChatMessage(text: '👋 你好！发一张图片和你的修图需求给我，我来帮你处理！\n\n例如：\n• 「把背景换成海边」\n• 「帮我去掉水印」\n• 「把文字\'你好\'改成\'再见\'」\n• 「给我加个复古滤镜」\n• 「把这张图抠出来」', isUser: false, time: DateTime.now())); }); }
-  void _scroll() { WidgetsBinding.instance.addPostFrameCallback((_) { if (_scrl.hasClients) _scrl.animateTo(_scrl.position.maxScrollExtent, duration: const Duration(milliseconds: 300), curve: Curves.easeOut); }); }
+  void initState() {
+    super.initState();
+    _messages.add(ChatMessage(text: '欢迎使用AI修图！\n\n示例指令：\n• 把背景换成海边\n• 帮我去掉水印\n• 把文字\'你好\'改成\'再见\'\n• 给我加个复古滤镜\n• 把这张图抠出来', isUser: false));
+  }
 
-  Future<void> _pick() async {
+  void _pickImage() async {
     if (_busy) return;
     try {
-      final i = await _picker.pickImage(source: ImageSource.gallery, maxWidth: 1920, maxHeight: 1920, imageQuality: 90);
-      if (i != null) { setState(() => _pending = File(i.path)); _msgs.add(ChatMessage(text: '已选择图片，请输入修图需求', isUser: false, time: DateTime.now(), imagePath: i.path)); _scroll(); }
-    } catch (_) { _err('选择图片失败'); }
+      final p = ImagePicker();
+      final f = await p.pickImage(source: ImageSource.gallery);
+      if (f != null) {
+        setState(() => _selected = f);
+        _messages.add(ChatMessage(text: '已选择图片，请输入修图需求', isUser: false));
+      }
+    } catch (e) {
+      setState(() => _messages.add(ChatMessage(text: '❌ 选图失败: $e', isUser: false)));
+    }
   }
 
   Future<void> _send() async {
-    final t = _txt.text.trim();
-    if (t.isEmpty && _pending == null) return;
-    setState(() { _busy = true; _msgs.add(ChatMessage(text: t, isUser: true, time: DateTime.now(), imagePath: _pending?.path)); });
-    _txt.clear(); _scroll(); await _proc(t);
-    setState(() { _pending = null; _busy = false; });
-  }
+    if (_busy) return;
+    final text = _textCtl.text.trim();
+    if (text.isEmpty) return;
+    if (_selected == null) { _messages.add(const ChatMessage(text: '请先选择一张图片', isUser: false, isError: true)); return; }
 
-  Future<void> _proc(String text) async {
+    setState(() { _busy = true; _textCtl.clear(); _resultBytes = null; });
+    _messages.add(ChatMessage(text: text, isUser: true));
+    _messages.add(const ChatMessage(text: '⏳ 美图API处理中...', isUser: false));
+    _scrollToBottom();
+
     try {
-      setState(() { _msgs.add(ChatMessage(text: '⏳ 正在调用美图API处理，请稍候...', isUser: false, time: DateTime.now(), isLoading: true)); });
-      _scroll();
-      final data = await _post('/api/edit', text, _pending);
-      if (data.containsKey('error')) { _replace('❌ 处理失败：${data['error']}'); return; }
-      final exp = data['explanation'] ?? '处理完成';
-      final rp = data['result_image_url'];
-      final tu = data['tool_used'];
-      final cc = data['credit_consumed'];
-      final cr = data['credit_remaining'];
-      String r = '✅ $exp\n\n🔧 使用工具：$tu\n';
-      if (cc != null) r += '💳 消耗积分：$cc\n';
-      if (cr != null) r += '📊 剩余积分：$cr';
-      if (rp != null && rp is String) {
-        final bytes = await _getBytes(rp);
-        if (bytes.isNotEmpty) { setState(() => _resultBytes = bytes); _replace(r); }
-        else { _replace('$r\n\n⚠️ 结果图片下载失败'); }
-      } else { _replace('$r\n\n⚠️ 未返回处理结果图片'); }
-    } catch (e) { _replace('❌ 网络错误：$e'); }
-    _scroll();
+      final bytes = await _selected!.readAsBytes();
+      final uri = Uri.parse('$_kUrl/api/edit');
+
+      final req = http.MultipartRequest('POST', uri);
+      req.fields['text'] = text;
+      req.files.add(http.MultipartFile.fromBytes('image', bytes, filename: _selected!.name));
+
+      final streamed = await req.send().timeout(const Duration(seconds: 120));
+      final resp = await http.Response.fromStream(streamed);
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        final resultUrl = data['result_image_url'];
+        final toolUsed = data['tool_used'] ?? 'unknown';
+        final creditInfo = data['credit_consumed'] != null ? ' (消耗${data['credit_consumed']}积分，剩余${data['credit_remaining']})' : '';
+
+        if (resultUrl != null) {
+          final imgResp = await http.get(Uri.parse('$_kUrl$resultUrl')).timeout(const Duration(seconds: 30));
+          if (imgResp.statusCode == 200) {
+            setState(() {
+              _messages.removeLast();
+              _messages.add(ChatMessage(text: '✅ 处理完成$creditInfo\n工具: $toolUsed', isUser: false));
+              _resultBytes = imgResp.bodyBytes;
+            });
+          } else {
+            setState(() {
+              _messages.removeLast();
+              _messages.add(ChatMessage(text: '✅ 处理完成，但获取结果图片失败 (HTTP ${imgResp.statusCode})', isUser: false));
+            });
+          }
+        } else {
+          setState(() {
+            _messages.removeLast();
+            _messages.add(ChatMessage(text: '✅ 处理完成$creditInfo\n${jsonEncode(data['result_data'] ?? data).toString().substring(0, 200)}', isUser: false));
+          });
+        }
+      } else {
+        final body = resp.body;
+        String detail;
+        try { final j = jsonDecode(body); detail = j['error'] ?? j.toString(); } catch (_) { detail = body.length > 300 ? body.substring(0, 300) : body; }
+        setState(() {
+          _messages.removeLast();
+          _messages.add(ChatMessage(text: '❌ 处理失败 (HTTP ${resp.statusCode}): $detail', isUser: false, isError: true));
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _messages.removeLast();
+        _messages.add(ChatMessage(text: '❌ 网络错误: $e', isUser: false, isError: true));
+      });
+    } finally {
+      setState(() => _busy = false);
+      _scrollToBottom();
+    }
   }
 
-  void _replace(String t) { setState(() { if (_msgs.isNotEmpty && _msgs.last.isLoading) _msgs.removeLast(); _msgs.add(ChatMessage(text: t, isUser: false, time: DateTime.now())); }); }
-  void _err(String m) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m), behavior: SnackBarBehavior.floating)); }
+  void _scrollToBottom() {
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (mounted) setState(() {});
+    });
+  }
 
   @override
-  void dispose() { _txt.dispose(); _scrl.dispose(); super.dispose(); }
+  void dispose() { _textCtl.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context);
-    return Scaffold(
-      appBar: AppBar(title: const Text('AI修图'), centerTitle: true, actions: [_pending != null ? IconButton(icon: const Icon(Icons.close), onPressed: () => setState(() => _pending = null)) : const SizedBox.shrink()]),
-      body: Column(children: [
-        Expanded(child: _msgs.isEmpty ? const Center(child: Text('来开始修图吧！')) : ListView.builder(controller: _scrl, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), itemCount: _msgs.length, itemBuilder: (ctx, i) => _bubble(_msgs[i], t, ctx))),
-        if (_pending != null) _preview(),
-        _input(t),
-      ]),
-    );
-  }
-
-  Widget _bubble(ChatMessage m, ThemeData t, BuildContext ctx) {
-    final u = m.isUser;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Column(crossAxisAlignment: u ? CrossAxisAlignment.end : CrossAxisAlignment.start, children: [
-        if (u && m.imagePath != null)
-          Padding(padding: const EdgeInsets.only(bottom: 4), child: ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.file(File(m.imagePath!), width: 200, height: 200, fit: BoxFit.cover))),
-        if (!u && _resultBytes != null)
-          Padding(padding: const EdgeInsets.only(bottom: 4), child: InkWell(onTap: () => _full(),
-              child: ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.memory(_resultBytes!, width: 250, height: 250, fit: BoxFit.contain)))),
-        if (m.isLoading) const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))),
-        if (m.text.isNotEmpty)
-          Container(constraints: BoxConstraints(maxWidth: MediaQuery.of(ctx).size.width * 0.75), padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(color: u ? t.colorScheme.primary : t.colorScheme.surfaceVariant,
-                  borderRadius: BorderRadius.circular(18).copyWith(bottomLeft: u ? const Radius.circular(18) : const Radius.circular(4), bottomRight: u ? const Radius.circular(4) : const Radius.circular(18))),
-              child: Text(m.text, style: TextStyle(color: u ? t.colorScheme.onPrimary : t.colorScheme.onSurface, fontSize: 15))),
-        Padding(padding: const EdgeInsets.only(top: 2, left: 8, right: 8), child: Text('${m.time.hour.toString().padLeft(2, '0')}:${m.time.minute.toString().padLeft(2, '0')}', style: TextStyle(color: t.colorScheme.onSurfaceVariant, fontSize: 11))),
-      ]),
-    );
-  }
-
-  Widget _preview() { return Container(height: 80, color: Colors.grey[100], padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), child: Row(children: [
-    ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.file(_pending!, width: 60, height: 60, fit: BoxFit.cover)),
-    const SizedBox(width: 12),
-    Expanded(child: Text('已选择图片，输入修图需求后发送', style: TextStyle(color: Colors.grey[600], fontSize: 13))),
-  ])); }
-
-  Widget _input(ThemeData t) {
-    return Container(
-      padding: EdgeInsets.only(left: 8, right: 8, top: 8, bottom: MediaQuery.of(context).padding.bottom + 8),
-      decoration: BoxDecoration(color: t.colorScheme.surface, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 4, offset: const Offset(0, -1))]),
-      child: Row(children: [
-        IconButton(icon: const Icon(Icons.image_outlined), color: t.colorScheme.primary, onPressed: _busy ? null : _pick),
-        Expanded(child: TextField(controller: _txt, enabled: !_busy,
-            decoration: InputDecoration(hintText: _pending != null ? '输入修图需求...' : '先选图片，再输入需求...',
+    return Column(children: [
+      Expanded(child: ListView.builder(
+        padding: const EdgeInsets.all(8), itemCount: _messages.length,
+        itemBuilder: (_, i) {
+          final m = _messages[i];
+          final align = m.isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start;
+          final bg = m.isUser ? t.colorScheme.primaryContainer : (m.isError ? Colors.red.shade50 : t.colorScheme.surfaceVariant);
+          final fg = m.isUser ? t.colorScheme.onPrimaryContainer : t.colorScheme.onSurfaceVariant;
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Column(crossAxisAlignment: align, children: [
+              if (m.isUser) const SizedBox(height: 4),
+              Container(
+                constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(16).copyWith(
+                  bottomLeft: m.isUser ? const Radius.circular(16) : Radius.zero,
+                  bottomRight: m.isUser ? Radius.zero : const Radius.circular(16))),
+                child: Text(m.text, style: TextStyle(color: fg, fontSize: 15))),
+            ]));
+        })),
+      if (_resultBytes != null) GestureDetector(
+        onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+          backgroundColor: Colors.black,
+          appBar: AppBar(backgroundColor: Colors.black, foregroundColor: Colors.white, title: const Text('修图结果')),
+          body: Center(child: InteractiveViewer(child: Image.memory(_resultBytes!, fit: BoxFit.contain)))))),
+        child: Container(height: 120, width: double.infinity, margin: const EdgeInsets.all(8),
+          decoration: BoxDecoration(borderRadius: BorderRadius.circular(12), image: DecorationImage(image: MemoryImage(_resultBytes!), fit: BoxFit.contain))),
+      ),
+      Padding(
+        padding: const EdgeInsets.all(8),
+        child: Row(children: [
+          IconButton(icon: const Icon(Icons.add_photo_alternate_outlined), onPressed: _busy ? null : _pickImage, toolTip: '选择图片'),
+          Expanded(child: TextField(
+            controller: _textCtl,
+            decoration: InputDecoration(
+                hintText: _selected != null ? '输入修图需求...' : '先选图片，再输入需求...',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
                 filled: true, fillColor: t.colorScheme.surfaceVariant, contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12)),
             textInputAction: TextInputAction.send, onSubmitted: (_) => _send(), maxLines: 3, minLines: 1)),
-        const SizedBox(width: 4),
-        IconButton.filled(icon: const Icon(Icons.send_rounded), color: t.colorScheme.onPrimary, onPressed: _busy ? null : _send),
-      ]),
-    );
-  }
-
-  void _full() {
-    if (_resultBytes == null) return;
-    Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
-        backgroundColor: Colors.black, appBar: AppBar(backgroundColor: Colors.black, foregroundColor: Colors.white, title: const Text('修图结果')),
-        body: Center(child: InteractiveViewer(child: Image.memory(_resultBytes!, fit: BoxFit.contain))))));
+          const SizedBox(width: 4),
+          IconButton.filled(icon: const Icon(Icons.send_rounded), color: t.colorScheme.onPrimary, onPressed: _busy ? null : _send),
+        ]),
+      ),
+    ]);
   }
 }
