@@ -1,31 +1,78 @@
+import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import '../models/chat_message.dart';
 
-const String _kBase = 'https://ce.a2ne.com';
+// Backend: TCP to IP (no DNS) + TLS upgrade with SNI.
+const String _kDomain = 'ce.a2ne.com';
+final InternetAddress _kIp = InternetAddress('43.131.228.126');
+const int    _kPort = 443;
+
+int _httpStatus(List<int> raw) {
+  for (int i = 0; i < raw.length - 3; i++) {
+    if (raw[i]==13 && raw[i+1]==10 && raw[i+2]==13 && raw[i+3]==10) {
+      final h = utf8.decode(raw.sublist(0, i));
+      final p = h.split('\r\n')[0].split(' ');
+      return p.length > 1 ? int.tryParse(p[1]) ?? 500 : 500;
+    }
+  }
+  return 500;
+}
+
+List<int> _httpBody(List<int> raw) {
+  for (int i = 0; i < raw.length - 3; i++) {
+    if (raw[i]==13 && raw[i+1]==10 && raw[i+2]==13 && raw[i+3]==10) return raw.sublist(i + 4);
+  }
+  return [];
+}
+
+/// TCP to IP (no DNS), then TLS upgrade with host: for SNI.
+Future<SecureSocket> _connect() async {
+  final raw = await Socket.connect(_kIp, _kPort,
+    timeout: const Duration(seconds: 15));
+  return SecureSocket.secure(raw,
+    host: _kDomain,
+    onBadCertificate: (_) => true,
+  );
+}
 
 Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
-  final uri = Uri.parse('$_kBase$path');
-  final req = http.MultipartRequest('POST', uri)
-    ..fields['text'] = text;
+  final bd = 'BZ${DateTime.now().millisecondsSinceEpoch}Z';
+  final buf = <int>[];
+  void w(String s) => buf.addAll(utf8.encode(s));
+  w('--$bd\r\nContent-Disposition: form-data; name="text"\r\n\r\n$text\r\n');
   if (img != null && img.existsSync()) {
-    req.files.add(await http.MultipartFile.fromPath('image', img.path));
+    final ext = img.path.endsWith('.png') ? 'png' : 'jpeg';
+    final d = await img.readAsBytes();
+    w('--$bd\r\nContent-Disposition: form-data; name="image"; filename="image.$ext"\r\nContent-Type: image/$ext\r\n\r\n');
+    buf.addAll(d);
+    w('\r\n');
   }
-  final res = await req.send().timeout(const Duration(seconds: 60));
-  final body = await res.stream.bytesToString();
-  if (res.statusCode != 200) return {'error': 'HTTP ${res.statusCode}: $body'};
-  return jsonDecode(body) as Map<String, dynamic>;
+  w('--$bd--\r\n');
+  final s = await _connect();
+  try {
+    s.add(utf8.encode('POST $path HTTP/1.1\r\nHost: $_kDomain\r\nContent-Type: multipart/form-data; boundary=$bd\r\nContent-Length: ${buf.length}\r\nConnection: close\r\n\r\n'));
+    s.add(buf);
+    await s.flush();
+    final raw = <int>[];
+    await for (final c in s) { raw.addAll(c); }
+    if (_httpStatus(raw) != 200) return {'error': 'HTTP ${_httpStatus(raw)}'};
+    return jsonDecode(utf8.decode(_httpBody(raw))) as Map<String, dynamic>;
+  } finally { s.close(); }
 }
 
 Future<Uint8List> _getBytes(String url) async {
-  final uri = Uri.parse(url.startsWith('http') ? url : '$_kBase$url');
-  final res = await http.get(uri).timeout(const Duration(seconds: 60));
-  if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
-  return res.bodyBytes;
+  final s = await _connect();
+  try {
+    final u = url.startsWith('http') ? Uri.parse(url).path : url;
+    s.add(utf8.encode('GET $u HTTP/1.1\r\nHost: $_kDomain\r\nConnection: close\r\n\r\n'));
+    await s.flush();
+    final raw = <int>[];
+    await for (final c in s) { raw.addAll(c); }
+    return Uint8List.fromList(_httpBody(raw));
+  } finally { s.close(); }
 }
 
 class ChatScreen extends StatefulWidget {
