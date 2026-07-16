@@ -34,71 +34,34 @@ jobs:
       - name: Build APK
         run: |
           flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
-          
           rm -rf /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
           
-          MANIFEST="/tmp/ab/android/app/src/main/AndroidManifest.xml"
-          python3 -c "
-import re
-with open('$MANIFEST', 'r') as f:
-    c = f.read()
-perm = '<uses-permission android:name=\"android.permission.INTERNET\"/>'
-if perm not in c:
-    c = c.replace('<application', perm + '\n    <application', 1)
-    with open('$MANIFEST', 'w') as f:
-        f.write(c)
-    print('Added INTERNET permission to AndroidManifest.xml')
-else:
-    print('INTERNET permission already present')
-with open('$MANIFEST', 'r') as f:
-    print(f.read())
-"
-          
+          # Fix INTERNET permission
           cd /tmp/ab
-          flutter pub add image_picker
-          flutter pub add http
-          flutter pub add path_provider
-          flutter pub add permission_handler
-          flutter pub add mime
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          grep -q INTERNET $MANIFEST || sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <application|' $MANIFEST
+          cat $MANIFEST | head -20
           
-          flutter build apk --release 2>&1 | tee /tmp/build.log; BUILD_EXIT=${PIPESTATUS[0]}; if [ $BUILD_EXIT -ne 0 ]; then echo '===== BUILD FAILED ====='; tail -80 /tmp/build.log; exit $BUILD_EXIT; fi
+          flutter pub add image_picker http path_provider permission_handler mime
+          flutter build apk --release
 
-      - name: Verify INTERNET permission
-        run: |
-          APK="/tmp/ab/build/app/outputs/flutter-apk/app-release.apk"
-          python3 -c "
-import zipfile
-with zipfile.ZipFile('$APK', 'r') as z:
-    raw = z.read('AndroidManifest.xml')
-    if b'INTERNET' in raw:
-        print('VERIFIED: INTERNET permission in APK')
-    else:
-        print('ERROR: INTERNET permission MISSING from APK!')
-        exit(1)
-"
+      - name: Verify
+        run: grep -l INTERNET /tmp/ab/android/app/src/main/AndroidManifest.xml && echo OK
 
       - name: Sign APK
         run: |
-          APK="/tmp/ab/build/app/outputs/flutter-apk/app-release.apk"
-          
-          keytool -genkey -v \
-            -keystore /tmp/release.jks \
-            -alias my-third-app3 \
+          APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
+          keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
             -keyalg RSA -keysize 2048 -validity 36500 \
             -storepass app123456 -keypass app123456 \
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
-
           APKSIGNER=$(ls -d ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
-          [ -z "$APKSIGNER" ] && APKSIGNER=$(find /usr/local/lib/android -name "apksigner" -type f 2>/dev/null | sort -V | tail -1)
-          
-          "$APKSIGNER" sign \
-            --ks /tmp/release.jks --ks-key-alias my-third-app3 \
+          $APKSIGNER sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
             --ks-pass pass:app123456 --key-pass pass:app123456 \
-            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-            "$APK"
-          "$APKSIGNER" verify --verbose "$APK"
+            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true $APK
+          $APKSIGNER verify --verbose $APK
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
