@@ -21,7 +21,7 @@ const storage = multer.diskStorage({
     cb(null, Date.now() + '-' + Math.random().toString(36).slice(2) + path.extname(file.originalname || '.jpg'));
   }
 });
-const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } }); // 20MB max
+const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } });
 
 // Find meitu CLI (graceful on startup)
 let MEITU_CLI = process.env.MEITU_CLI_PATH || 'npx meitu';
@@ -66,17 +66,23 @@ app.post('/api/edit', upload.single('image'), async (req, res) => {
       preCredit = JSON.parse(out);
     } catch {}
 
-    // Classify request (simple detection)
-    const textLower = userText.toLowerCase();
+    // Classify request - support more Chinese text patterns
+    const t = userText.toLowerCase();
     let toolName = 'image-text-replace';
-    if (textLower.includes('背景') || textLower.includes('background')) {
-      toolName = textLower.includes('去除') || textLower.includes('去掉') ? 'image-cutout' : 'image-background-replace';
-    } else if (textLower.includes('去水印') || textLower.includes('去除') || textLower.includes('去掉')) {
+
+    if (t.includes('背景') || t.includes('background')) {
+      toolName = (t.includes('去除') || t.includes('去掉') || t.includes('移除')) ? 'image-cutout' : 'image-background-replace';
+    } else if (t.includes('抠图') || t.includes('去背景') || t.includes('透明') || t.includes('cutout') || t.includes('remove background')) {
+      toolName = 'image-cutout';
+    } else if (t.includes('去水印') || t.includes('去掉') || t.includes('去除') || t.includes('消除') || t.includes('移除')) {
       toolName = 'image-element-remove';
-    } else if (textLower.includes('修改') || textLower.includes('改成') || textLower.includes('替换')) {
+    } else if (t.includes('改字') || t.includes('改文字') || t.includes('替换文字') || t.includes('改成') || t.includes('改为') || t.includes('修改') || t.includes('替换')) {
       toolName = 'image-text-replace';
+    } else if (t.includes('滤镜') || t.includes('美化') || t.includes('修图') || t.includes('编辑')) {
+      toolName = 'image-edit';
     } else {
-      toolName = 'image-edit-praline';
+      // Default: text replacement (most common use case)
+      toolName = 'image-text-replace';
     }
 
     console.log(`Tool: ${toolName}, Image: ${file.filename}, Prompt: ${userText}`);
@@ -102,7 +108,7 @@ app.post('/api/edit', upload.single('image'), async (req, res) => {
       if (err) {
         console.error('Meitu CLI error:', stderr || stdout);
         return res.status(500).json({
-          error: '处理失败: ' + (stderr || stdout || err.message).slice(0, 500),
+          error: '美图API处理失败: ' + (stderr || stdout || err.message).slice(0, 500),
           tool_used: toolName
         });
       }
