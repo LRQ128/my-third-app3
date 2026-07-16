@@ -33,16 +33,14 @@ jobs:
 
       - name: Build APK
         run: |
+          set -ex
           flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
           rm -rf /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
-
-          # Override AndroidManifest with our own (which has INTERNET + all permissions)
           cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
-          
           cd /tmp/ab
-          flutter pub add image_picker http path_provider permission_handler mime
+          flutter pub add image_picker:^1.0.7 path_provider:^2.1.2 permission_handler:^11.3.0
           flutter build apk --release
 
       - name: Sign APK
