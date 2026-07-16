@@ -5,9 +5,8 @@ import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
 import '../models/chat_message.dart';
 
-// Zeabur backend: TCP to IP (no DNS) + TLS upgrade via SecureSocket.secure(host:).
-const String _kDomain = 'my-third-app3.zeabur.app';
-final InternetAddress _kIp = InternetAddress('43.131.228.126');
+// Backend - use custom domain (via A record to Zeabur IP)
+const String _kDomain = 'ce.a2ne.com';
 const int    _kPort = 443;
 
 int _httpStatus(List<int> raw) {
@@ -28,14 +27,11 @@ List<int> _httpBody(List<int> raw) {
   return [];
 }
 
-/// Raw TCP to IP (no DNS), then SecureSocket.secure with host: for SNI.
+/// TLS to domain (uses system DNS + SNI for Zeabur routing)
 Future<SecureSocket> _connect() async {
-  final raw = await Socket.connect(_kIp, _kPort,
-    timeout: const Duration(seconds: 15));
-  return SecureSocket.secure(raw,
-    host: _kDomain,
+  return SecureSocket.connect(_kDomain, _kPort,
     onBadCertificate: (_) => true,
-  );
+    timeout: const Duration(seconds: 15));
 }
 
 Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
