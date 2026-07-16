@@ -33,15 +33,55 @@ jobs:
 
       - name: Build APK
         run: |
-          # Generate fresh project with correct scaffolding for this Flutter version
+          # Generate fresh project scaffolding
           flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
           
-          # Copy ONLY our custom lib/ code
+          # Copy our custom code
           rm -rf /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
           
-          # Add our dependencies safely (don't replace generated pubspec.yaml)
+          # CRITICAL: Replace AndroidManifest with one that has INTERNET permission
+          # Flutter 3.22.x's default template may NOT include it
+          cat > /tmp/ab/android/app/src/main/AndroidManifest.xml << 'EOFXML'
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+
+    <application
+        android:label="AI修图"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme"/>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2"/>
+    </application>
+</manifest>
+EOFXML
+          
+          echo "=== AndroidManifest.xml ==="
+          cat /tmp/ab/android/app/src/main/AndroidManifest.xml
+          
+          # Add dependencies
           cd /tmp/ab
           flutter pub add image_picker
           flutter pub add http
@@ -51,10 +91,24 @@ jobs:
           
           flutter build apk --release 2>&1 | tee /tmp/build.log; BUILD_EXIT=${PIPESTATUS[0]}; if [ $BUILD_EXIT -ne 0 ]; then echo '===== BUILD FAILED ====='; tail -80 /tmp/build.log; exit $BUILD_EXIT; fi
 
-      - name: Sign APK
+      - name: Verify INTERNET permission in APK
         run: |
           APK="/tmp/ab/build/app/outputs/flutter-apk/app-release.apk"
           test -f "$APK" || exit 1
+          python3 -c "
+import zipfile
+with zipfile.ZipFile('$APK', 'r') as z:
+    raw = z.read('AndroidManifest.xml')
+    if b'INTERNET' in raw:
+        print('✅ INTERNET permission confirmed in APK')
+    else:
+        print('❌ INTERNET permission MISSING!')
+        exit(1)
+"
+
+      - name: Sign APK
+        run: |
+          APK="/tmp/ab/build/app/outputs/flutter-apk/app-release.apk"
           
           keytool -genkey -v \
             -keystore /tmp/release.jks \
