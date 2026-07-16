@@ -5,10 +5,9 @@ import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
 import '../models/chat_message.dart';
 
-// Zeabur backend - raw TCP to IP (no DNS), upgrade to TLS with hostname SNI.
+// Zeabur backend - use domain for TLS SNI (required on Android 14+)
 const String _kDomain = 'my-third-app3.zeabur.app';
 const int    _kPort = 443;
-final InternetAddress _kIp = InternetAddress('43.131.228.126');
 
 int _httpStatus(List<int> raw) {
   for (int i = 0; i < raw.length - 3; i++) {
@@ -28,14 +27,11 @@ List<int> _httpBody(List<int> raw) {
   return [];
 }
 
-/// Raw TCP to IP (bypass DNS), then upgrade TLS with hostname for SNI.
+/// TLS to domain (uses system DNS + SNI for Zeabur routing)
 Future<SecureSocket> _connect() async {
-  final raw = await Socket.connect(_kIp, _kPort,
-    timeout: const Duration(seconds: 15));
-  return SecureSocket.upgrade(raw,
-    hostname: _kDomain,
+  return SecureSocket.connect(_kDomain, _kPort,
     onBadCertificate: (_) => true,
-  );
+    timeout: const Duration(seconds: 15));
 }
 
 Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
