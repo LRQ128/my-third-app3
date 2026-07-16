@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
@@ -128,7 +127,7 @@ class _ChatScreenState extends State<ChatScreen> {
         itemBuilder: (_, i) {
           final m = _messages[i];
           final align = m.isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start;
-          final bg = m.isUser ? t.colorScheme.primaryContainer : (m.isError ? Colors.red.shade50 : t.colorScheme.surfaceVariant);
+          final bg = m.isUser ? t.colorScheme.primaryContainer : t.colorScheme.surfaceVariant;
           final fg = m.isUser ? t.colorScheme.onPrimaryContainer : t.colorScheme.onSurfaceVariant;
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
