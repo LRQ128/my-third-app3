@@ -21,18 +21,19 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.x'
-          channel: 'stable'
+          flutter-version: 3.22.x
+          channel: stable
           cache: true
 
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: zulu
           java-version: '17'
 
       - name: Build APK
         run: |
+          set -ex
           flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
           rm -rf /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
@@ -46,14 +47,9 @@ jobs:
       - name: Sign APK
         run: |
           APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
-          keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
-            -keyalg RSA -keysize 2048 -validity 36500 \
-            -storepass app123456 -keypass app123456 \
-            -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
+          keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 -keyalg RSA -keysize 2048 -validity 36500 -storepass app123456 -keypass app123456 -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
           APKSIGNER=$(ls -d ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
-          $APKSIGNER sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
-            --ks-pass pass:app123456 --key-pass pass:app123456 \
-            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true $APK
+          $APKSIGNER sign --ks /tmp/release.jks --ks-key-alias my-third-app3 --ks-pass pass:app123456 --key-pass pass:app123456 --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true $APK
           $APKSIGNER verify --verbose $APK
 
       - name: Create Release
