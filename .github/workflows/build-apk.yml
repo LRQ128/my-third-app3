@@ -37,18 +37,13 @@ jobs:
           rm -rf /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
           cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
+
+          # Override AndroidManifest with our own (which has INTERNET + all permissions)
+          cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
           
-          # Fix INTERNET permission
           cd /tmp/ab
-          MANIFEST=android/app/src/main/AndroidManifest.xml
-          grep -q INTERNET $MANIFEST || sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <application|' $MANIFEST
-          cat $MANIFEST | head -20
-          
           flutter pub add image_picker http path_provider permission_handler mime
           flutter build apk --release
-
-      - name: Verify
-        run: grep -l INTERNET /tmp/ab/android/app/src/main/AndroidManifest.xml && echo OK
 
       - name: Sign APK
         run: |
