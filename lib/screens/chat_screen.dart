@@ -46,7 +46,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_busy) return;
     final text = _textCtl.text.trim();
     if (text.isEmpty) return;
-    if (_selected == null) { _messages.add(const ChatMessage(text: '请先选择一张图片', isUser: false, isError: true)); return; }
+    if (_selected == null) { _messages.add(const ChatMessage(text: '请先选择一张图片', isUser: false)); return; }
 
     setState(() { _busy = true; _textCtl.clear(); _resultBytes = null; });
     _messages.add(ChatMessage(text: text, isUser: true));
@@ -96,13 +96,13 @@ class _ChatScreenState extends State<ChatScreen> {
         try { final j = jsonDecode(body); detail = j['error'] ?? j.toString(); } catch (_) { detail = body.length > 300 ? body.substring(0, 300) : body; }
         setState(() {
           _messages.removeLast();
-          _messages.add(ChatMessage(text: '❌ 处理失败 (HTTP ${resp.statusCode}): $detail', isUser: false, isError: true));
+          _messages.add(ChatMessage(text: '❌ 处理失败 (HTTP ${resp.statusCode}): $detail', isUser: false));
         });
       }
     } catch (e) {
       setState(() {
         _messages.removeLast();
-        _messages.add(ChatMessage(text: '❌ 网络错误: $e', isUser: false, isError: true));
+        _messages.add(ChatMessage(text: '❌ 网络错误: $e', isUser: false));
       });
     } finally {
       setState(() => _busy = false);
