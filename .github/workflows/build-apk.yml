@@ -66,13 +66,13 @@ jobs:
           done
 
       - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_number }}
-          name: AI修图 v${{ github.run_number }}
-          body: |
-            ## AI修图 App v${{ github.run_number }}
-            - errno=103切后台自动重试3次
-            - 聊天记录持久化(关闭重开保存历史)
-          files: /tmp/ab/build/app/outputs/flutter-apk/app-release.apk
-          generate_release_notes: false
+        run: |
+          cp /tmp/ab/build/app/outputs/flutter-apk/app-release.apk "${GITHUB_WORKSPACE}/app-release.apk"
+          ls -la "${GITHUB_WORKSPACE}/app-release.apk"
+          TAG="v${{ github.run_number }}"
+          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" gh release create "$TAG" \
+            "${GITHUB_WORKSPACE}/app-release.apk" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "AI修图 v${{ github.run_number }}" \
+            --notes "修复: errno=103切后台自动重试3次, 聊天记录持久化(关闭重开保存历史)" \
+            --generate-notes=false
