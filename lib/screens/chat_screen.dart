@@ -194,7 +194,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     try {
       // Save user image locally for persistence
       final imgPath = await _Store.copyImg(File(_selected!.path), 'picked');
-
+      
       // Re-add user message with image path (replace previous text-only entry)
       setState(() {
         _msgs.removeWhere((m) => m.text == t && m.isUser);
@@ -224,7 +224,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           final bytes = await _get(rp);
           if (bytes.isNotEmpty) {
             final localPath = await _Store.saveImg(bytes, 'result');
-            _addMsg(ChatMessage(text: r, isUser: false, time: DateTime.now(), resultImageUrl: localPath), false);
+            _addMsg(ChatMessage(text: r, isUser: false, time: DateTime.now(), resultImageUrl: localPath));
           } else {
             _addMsg('$r\n⚠️ 结果图片为空', false);
           }
