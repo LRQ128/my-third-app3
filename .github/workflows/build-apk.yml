@@ -31,13 +31,12 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Build & Sign & Release
+      - name: Build APK
         run: |
           set -ex
           max_retry=2
           for attempt in $(seq 0 $max_retry); do
             if [ $attempt -gt 0 ]; then echo "Retry $attempt..."; sleep 30; fi
-            
             flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab && \
             rm -rf /tmp/ab/lib/ && \
             cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/ && \
@@ -46,33 +45,34 @@ jobs:
             cd /tmp/ab && \
             flutter pub add image_picker path_provider permission_handler && \
             flutter build apk --release && \
-            echo "Build done, signing..." && \
-            keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
-              -keyalg RSA -keysize 2048 -validity 36500 \
-              -storepass app123456 -keypass app123456 \
-              -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN" && \
-            echo "ANDROID_HOME: ${ANDROID_HOME}" && \
-            echo "Build tools:" && \
-            ls ${ANDROID_HOME}/build-tools/ && \
-            APKSIGNER=$(ls ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1) && \
-            echo "apksigner: $APKSIGNER" && \
-            "$APKSIGNER" sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
-              --ks-pass pass:app123456 --key-pass pass:app123456 \
-              --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-              build/app/outputs/flutter-apk/app-release.apk && \
-            "$APKSIGNER" verify --verbose build/app/outputs/flutter-apk/app-release.apk 2>&1 && \
-            echo "Sign verified!" && \
             break || echo "Attempt $attempt failed"
           done
 
-      - name: Release
+      - name: Sign APK
         run: |
-          cp /tmp/ab/build/app/outputs/flutter-apk/app-release.apk "${GITHUB_WORKSPACE}/app-release.apk"
+          set -ex
+          APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
+          keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
+            -keyalg RSA -keysize 2048 -validity 36500 \
+            -storepass app123456 -keypass app123456 \
+            -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
+          APKSIGNER=$(ls -d ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          $APKSIGNER sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
+            --ks-pass pass:app123456 --key-pass pass:app123456 \
+            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true $APK
+          $APKSIGNER verify --verbose $APK
+          # Copy to workspace for release
+          cp $APK "${GITHUB_WORKSPACE}/app-release.apk"
           ls -la "${GITHUB_WORKSPACE}/app-release.apk"
-          TAG="v${{ github.run_number }}"
-          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" gh release create "$TAG" \
-            "${GITHUB_WORKSPACE}/app-release.apk" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "AI修图 v${{ github.run_number }}" \
-            --notes "修复: errno=103切后台自动重试3次, 聊天记录持久化(关闭重开保存历史)" \
-            --generate-notes=false
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: AI修图 v${{ github.run_number }}
+          body: |
+            ## AI修图 App v${{ github.run_number }}
+            - errno=103切后台自动重试3次
+            - 聊天记录持久化(关闭重开保存历史)
+          files: app-release.apk
+          generate_release_notes: false
