@@ -35,15 +35,24 @@ jobs:
       - name: Build APK
         run: |
           set -ex
-          flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
-          rm -rf /tmp/ab/lib/
-          cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
-          cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
-          cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
-          cd /tmp/ab
-          flutter pub add image_picker path_provider permission_handler
-          flutter build apk --release
-          ls -la /tmp/ab/build/app/outputs/flutter-apk/app-release.apk
+          max_retry=2
+          retry_delay=30
+          for attempt in $(seq 0 $max_retry); do
+            if [ $attempt -gt 0 ]; then
+              echo "Retry attempt $attempt/$max_retry after ${retry_delay}s..."
+              sleep $retry_delay
+            fi
+            flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab && \
+            rm -rf /tmp/ab/lib/ && \
+            cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/ && \
+            cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/ && \
+            cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml && \
+            cd /tmp/ab && \
+            flutter pub add image_picker path_provider permission_handler && \
+            flutter build apk --release && \
+            ls -la /tmp/ab/build/app/outputs/flutter-apk/app-release.apk && \
+            break || echo "Attempt $attempt/$max_retry failed, retrying..."
+          done
 
       - name: Sign APK
         run: |
