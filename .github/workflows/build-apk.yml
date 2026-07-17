@@ -13,7 +13,6 @@ jobs:
   build:
     permissions:
       contents: write
-      actions: read
     runs-on: ubuntu-latest
 
     steps:
@@ -36,51 +35,40 @@ jobs:
         run: |
           set -ex
           max_retry=2
-          retry_delay=30
           for attempt in $(seq 0 $max_retry); do
-            if [ $attempt -gt 0 ]; then
-              echo "Retry attempt $attempt/$max_retry after ${retry_delay}s..."
-              sleep $retry_delay
-            fi
+            if [ $attempt -gt 0 ]; then echo "Retry $attempt..."; sleep 30; fi
             flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab && \
             rm -rf /tmp/ab/lib/ && \
             cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/ && \
             cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/ && \
             cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml && \
+            keytool -genkey -v -keystore /tmp/ab/android/app/release.jks -alias my-third-app3 \
+              -keyalg RSA -keysize 2048 -validity 36500 \
+              -storepass mypass123 -keypass mypass123 \
+              -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN" && \
+            echo "storePassword=mypass123
+keyPassword=mypass123
+keyAlias=my-third-app3
+storeFile=release.jks" > /tmp/ab/android/key.properties && \
             cd /tmp/ab && \
             flutter pub add image_picker path_provider permission_handler && \
             flutter build apk --release && \
-            ls -la /tmp/ab/build/app/outputs/flutter-apk/app-release.apk && \
-            break || echo "Attempt $attempt/$max_retry failed, retrying..."
+            ls -la build/app/outputs/flutter-apk/app-release.apk && \
+            break || echo "Attempt $attempt failed"
           done
 
-      - name: Sign & Release
+      - name: Verify & Release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -e
+          set -ex
           APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
-          test -f "$APK" || { echo "APK not found!"; exit 1; }
-          echo "APK size: $(ls -lh "$APK" | awk '{print $5}')"
+          test -f "$APK" || { echo "No APK!"; find /tmp/ab/build -name "*.apk"; exit 1; }
+          echo "APK size: $(stat --printf=%s $APK 2>/dev/null || wc -c < $APK)"
           
-          # Generate keystore
-          keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
-            -keyalg RSA -keysize 2048 -validity 36500 \
-            -storepass app123456 -keypass app123456 \
-            -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
-          echo "Keystore created"
-          
-          # Sign using jarsigner (always available with JDK)
-          jarsigner -verbose -keystore /tmp/release.jks -storepass app123456 \
-            -keypass app123456 -digestalg SHA1 -sigalg SHA1withRSA \
-            "$APK" my-third-app3
-          echo "jarsigner done"
-          
-          # Create release
           TAG="v${{ github.run_number }}"
-          echo "Creating release $TAG..."
-          # Use GITHUB_TOKEN for gh CLI
-          GH_TOKEN=${{ github.token }} gh release create "$TAG" "$APK" \
+          gh release create "$TAG" "$APK" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "AI修图 v${{ github.run_number }}" \
-            --notes "- errno=103切后台自动重试3次\n-聊天记录持久化(关闭重开保存历史)" \
+            --notes "修图App v${{ github.run_number }}" \
             --generate-notes=false
-          echo "Release $TAG created"
