@@ -39,10 +39,12 @@ Future<SecureSocket> _connect() async {
   );
 }
 
-Future<Map<String, dynamic>> _post(String path, String text, File? img) async {
+Future<Map<String, dynamic>> _post(String path, String text, File? img, {String mode = 'free', String tool = 'enhance'}) async {
   final bd = 'BZ${DateTime.now().millisecondsSinceEpoch}Z';
   final buf = <int>[];
   void w(String s) => buf.addAll(utf8.encode(s));
+  w('--$bd\r\nContent-Disposition: form-data; name="mode"\r\n\r\n$mode\r\n');
+  w('--$bd\r\nContent-Disposition: form-data; name="tool"\r\n\r\n$tool\r\n');
   w('--$bd\r\nContent-Disposition: form-data; name="text"\r\n\r\n$text\r\n');
   if (img != null && img.existsSync()) {
     final ext = img.path.endsWith('.png') ? 'png' : 'jpeg';
@@ -82,13 +84,32 @@ Future<Uint8List> _getBytes(String url) async {
   } finally { s.close(); }
 }
 
-// ========== Tool types (for display only - all use Meitu API) ==========
-enum ToolType {
-  meitu('美图AI', Icons.auto_awesome);
+// ========== Mode & Tool types ==========
+enum AppMode { free, meitu }
+
+class ToolDef {
+  final String id;
   final String label;
   final IconData icon;
-  const ToolType(this.label, this.icon);
+  final bool needsText;
+  const ToolDef(this.id, this.label, this.icon, [this.needsText = false]);
 }
+
+const List<ToolDef> FREE_TOOLS = [
+  ToolDef('cutout', '抠图', Icons.content_cut),
+  ToolDef('text-replace', '改字', Icons.text_fields, true),
+  ToolDef('denoise', '去噪', Icons.noise_control_off),
+  ToolDef('enhance', '暗部增强', Icons.brightness_high),
+  ToolDef('superres', '超清', Icons.enhance_photo_translate),
+  ToolDef('grayscale', '黑白', Icons.filter_b_and_w),
+  ToolDef('sepia', '复古', Icons.color_lens),
+  ToolDef('rotate', '旋转', Icons.rotate_right),
+  ToolDef('blur', '模糊', Icons.blur_on),
+];
+
+const List<ToolDef> MEITU_TOOLS = [
+  ToolDef('image-edit', '美图AI', Icons.auto_awesome),
+];
 
 // ========== Edit record model ==========
 class EditRecord {
@@ -295,8 +316,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final ImagePicker _picker = ImagePicker();
   File? _pending;
   bool _busy = false;
-  String? _resultImagePath;
-  ToolType _selectedTool = ToolType.meitu;
+  AppMode _appMode = AppMode.free;
+  // For free mode: selected tool id
+  String? _selectedFreeTool;
+  // For meitu mode: selected tool id
+  String? _selectedMeituTool;
+  bool _showFreeToolbar = true;
 
   @override
   void initState() {
@@ -316,48 +341,115 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     else { _welcome(); }
   }
 
-  void _welcome() { setState(() { _msgs.add(ChatMessage(text: '👋 你好！选一张图片，选择顶部工具后即可处理！', isUser: false, time: DateTime.now())); }); }
+  void _welcome() {
+    setState(() {
+      _msgs.add(ChatMessage(
+        text: '👋 选张图片，再选工具处理！\n\n'
+              '🆓 免费版：抠图/改字/去噪/暗部增强/超清/黑白/复古/旋转/模糊\n'
+              '🎨 美图版：美图AI处理',
+        isUser: false, time: DateTime.now()));
+    });
+  }
+
   void _scroll() { WidgetsBinding.instance.addPostFrameCallback((_) { if (_scrl.hasClients) _scrl.animateTo(_scrl.position.maxScrollExtent, duration: const Duration(milliseconds: 300), curve: Curves.easeOut); }); }
 
   Future<void> _pick() async {
     if (_busy) return;
     try {
       final i = await _picker.pickImage(source: ImageSource.gallery, maxWidth: 1920, maxHeight: 1920, imageQuality: 90);
-      if (i != null) { setState(() => _pending = File(i.path)); _msgs.add(ChatMessage(text: '已选择图片，选择顶部工具后发送', isUser: false, time: DateTime.now(), imagePath: i.path)); setState(() {}); _scroll(); _persist(); }
+      if (i != null) {
+        setState(() => _pending = File(i.path));
+        _msgs.add(ChatMessage(text: '已选择图片，选择工具后发送', isUser: false, time: DateTime.now(), imagePath: i.path));
+        setState(() {});
+        _scroll();
+        _persist();
+      }
     } catch (_) { _err('选择图片失败'); }
   }
 
   Future<void> _send() async {
     final t = _txt.text.trim();
     if (_pending == null) { _err('请先选择图片'); return; }
-    setState(() { _busy = true; _msgs.add(ChatMessage(text: t.isNotEmpty ? t : '处理图片', isUser: true, time: DateTime.now(), imagePath: _pending?.path)); });
-    _txt.clear(); _scroll(); await _proc();
+    
+    // Determine tool and mode
+    String? toolId;
+    if (_appMode == AppMode.free) {
+      toolId = _selectedFreeTool;
+      if (toolId == null) { _err('请先选择顶部免费工具'); return; }
+    } else {
+      toolId = _selectedMeituTool;
+    }
+    
+    setState(() {
+      _busy = true;
+      final toolLabel = _currentToolLabel(toolId);
+      _msgs.add(ChatMessage(
+        text: t.isNotEmpty ? '[$toolLabel] $t' : '[$toolLabel]',
+        isUser: true, time: DateTime.now(), imagePath: _pending?.path));
+    });
+    _txt.clear();
+    _scroll();
+    await _proc(toolId!, t);
     setState(() { _pending = null; _busy = false; });
   }
 
-  Future<void> _proc() async {
+  String _currentToolLabel(String? toolId) {
+    final all = _appMode == AppMode.free ? FREE_TOOLS : MEITU_TOOLS;
+    for (final t in all) { if (t.id == toolId) return t.label; }
+    return '美图AI';
+  }
+
+  Future<void> _proc(String toolId, String text) async {
     try {
-      setState(() { _msgs.add(ChatMessage(text: '⏳ 正在调用美图API处理，请稍候...', isUser: false, time: DateTime.now(), isLoading: true)); });
+      setState(() {
+        final modeLabel = _appMode == AppMode.free ? '免费' : '美图';
+        _msgs.add(ChatMessage(text: '⏳ 正在调用$modeLabel工具处理，请稍候...', isUser: false, time: DateTime.now(), isLoading: true));
+      });
       _scroll();
-      final data = await _post('/api/edit', '请处理这张图片', _pending);
-      if (data.containsKey('error')) { _replace('❌ 处理失败：${data['error']}'); return; }
+      
+      final data = await _post('/api/edit', text, _pending, mode: _appMode.name, tool: toolId);
+      
+      if (data.containsKey('error')) {
+        _replace('❌ 处理失败：${data['error']}');
+        return;
+      }
+      
       final exp = data['explanation'] ?? '处理完成';
       final rp = data['result_image_url'];
-      String r = '✅ $exp';
+      final modeLabel = data['mode'] ?? _appMode.name;
+      final creditInfo = data['credit_consumed'] != null
+          ? '\n💳 消耗: ${data['credit_consumed']} | 剩余: ${data['credit_remaining']}'
+          : '';
+      
+      String r = '✅ $exp$creditInfo';
       if (rp != null && rp is String) {
         final bytes = await _getBytes(rp);
         if (bytes.isNotEmpty) {
           final localPath = await _Store.saveResultImage(bytes, 'result');
-          _resultImagePath = localPath;
           // Save record
-          try { final records = await _Store.loadRecords();
-            records.add(EditRecord(id: DateTime.now().millisecondsSinceEpoch.toString(), timestamp: DateTime.now(), toolName: '美图AI', description: 'AI修图', beforeImagePath: _pending!.path, afterImagePath: localPath));
+          try {
+            final records = await _Store.loadRecords();
+            final toolLabel = _currentToolLabel(toolId);
+            records.add(EditRecord(
+              id: DateTime.now().millisecondsSinceEpoch.toString(),
+              timestamp: DateTime.now(),
+              toolName: '[$modeLabel] $toolLabel',
+              description: text.isNotEmpty ? text : toolLabel,
+              beforeImagePath: _pending!.path,
+              afterImagePath: localPath,
+            ));
             await _Store.saveRecords(records);
           } catch (_) {}
-          _replaceWithImage('$r\n\n点击图片放大查看，📥 长按下载到手机', localPath);
-        } else { _replace('$r\n\n⚠️ 结果图片下载失败'); }
-      } else { _replace('$r\n\n⚠️ 未返回处理结果图片'); }
-    } catch (e) { _replace('❌ 网络错误：$e'); }
+          _replaceWithImage('$r\n\n点击图片放大，📥 长按下载', localPath);
+        } else {
+          _replace('$r\n\n⚠️ 结果图片下载失败');
+        }
+      } else {
+        _replace('$r\n\n⚠️ 未返回处理结果图片');
+      }
+    } catch (e) {
+      _replace('❌ 网络错误：$e');
+    }
     _scroll();
   }
 
@@ -398,6 +490,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ],
       ),
       body: Column(children: [
+        _modeSwitch(t),
         _toolBar(t),
         Expanded(child: _msgs.isEmpty ? const Center(child: Text('来开始修图吧！')) : ListView.builder(controller: _scrl, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), itemCount: _msgs.length, itemBuilder: (ctx, i) => _bubble(_msgs[i], t, ctx))),
         if (_pending != null) _preview(),
@@ -406,20 +499,68 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
+  Widget _modeSwitch(ThemeData t) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
+      decoration: BoxDecoration(color: t.colorScheme.surface, border: Border(bottom: BorderSide(color: Colors.grey.withOpacity(0.2)))),
+      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+        _modeButton('🆓 免费版', AppMode.free, t),
+        const SizedBox(width: 12),
+        _modeButton('🎨 美图版', AppMode.meitu, t),
+      ]),
+    );
+  }
+
+  Widget _modeButton(String label, AppMode mode, ThemeData t) {
+    final active = _appMode == mode;
+    return GestureDetector(
+      onTap: () { if (!_busy) setState(() { _appMode = mode; _selectedFreeTool = null; _selectedMeituTool = null; }); },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        decoration: BoxDecoration(
+          color: active ? t.colorScheme.primary : Colors.transparent,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: active ? t.colorScheme.primary : Colors.grey.shade400),
+        ),
+        child: Text(label, style: TextStyle(
+          color: active ? t.colorScheme.onPrimary : Colors.grey.shade600,
+          fontWeight: active ? FontWeight.bold : FontWeight.normal,
+          fontSize: 13,
+        )),
+      ),
+    );
+  }
+
   Widget _toolBar(ThemeData t) {
+    final tools = _appMode == AppMode.free ? FREE_TOOLS : MEITU_TOOLS;
+    final selectedId = _appMode == AppMode.free ? _selectedFreeTool : _selectedMeituTool;
+    
+    if (tools.isEmpty) return const SizedBox.shrink();
+    
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 6),
       decoration: BoxDecoration(color: t.colorScheme.surface, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 2, offset: const Offset(0, 1))]),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 8),
-        child: Row(children: ToolType.values.map((tool) {
-          final selected = tool == _selectedTool;
+        child: Row(children: tools.map((tool) {
+          final selected = tool.id == selectedId;
           return Padding(
             padding: const EdgeInsets.symmetric(horizontal: 3),
             child: ChoiceChip(showCheckmark: false, selected: selected,
               label: Row(mainAxisSize: MainAxisSize.min, children: [Icon(tool.icon, size: 16), const SizedBox(width: 4), Text(tool.label, style: const TextStyle(fontSize: 12))]),
-              onSelected: (_) { if (!_busy) setState(() => _selectedTool = tool); },
+              selectedColor: _appMode == AppMode.free ? Colors.green.shade100 : t.colorScheme.primaryContainer,
+              onSelected: (_) {
+                if (!_busy) {
+                  setState(() {
+                    if (_appMode == AppMode.free) {
+                      _selectedFreeTool = tool.id;
+                    } else {
+                      _selectedMeituTool = tool.id;
+                    }
+                  });
+                }
+              },
             ),
           );
         }).toList()),
@@ -457,7 +598,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Widget _preview() { return Container(height: 80, color: Colors.grey[100], padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), child: Row(children: [
     ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.file(_pending!, width: 60, height: 60, fit: BoxFit.cover)),
     const SizedBox(width: 12),
-    Expanded(child: Text('已选择图片，选择顶部工具后发送', style: TextStyle(color: Colors.grey[600], fontSize: 13))),
+    Expanded(child: Text('已选择图片，选择工具后发送', style: TextStyle(color: Colors.grey[600], fontSize: 13))),
   ])); }
 
   Widget _input(ThemeData t) {
