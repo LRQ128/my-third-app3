@@ -4,7 +4,6 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:image/image.dart' as img;
 import '../models/chat_message.dart';
 
 // ========== Backend networking ==========
@@ -98,126 +97,13 @@ Future<Uint8List> _getBytes(String url) async {
 
 // ========== Free local image tools ==========
 enum ToolType {
-  meitu('美图AI', Icons.auto_awesome, false),
-  grayscale('黑白', Icons.color_lens, true),
-  sepia('复古', Icons.wb_sunset, true),
-  brighten('增亮', Icons.brightness_high, true),
-  contrast('对比度', Icons.contrast, true),
-  rotate('旋转', Icons.rotate_right, true),
-  flip('翻转', Icons.flip, true),
-  blur('模糊', Icons.blur_on, true);
+  meitu('美图AI', Icons.auto_awesome, false);
 
   final String label;
   final IconData icon;
   final bool isLocal;
   const ToolType(this.label, this.icon, this.isLocal);
 }
-
-/// Process an image file using a local tool (no network needed).
-Future<Uint8List> _processLocalTool(File imageFile, ToolType tool) async {
-  final bytes = await imageFile.readAsBytes();
-  final src = img.decodeImage(bytes);
-  if (src == null) throw Exception('无法解码图片');
-
-  img.Image processed;
-  switch (tool) {
-    case ToolType.grayscale:
-      processed = img.grayscale(src);
-      break;
-    case ToolType.sepia:
-      processed = _applySepia(src);
-      break;
-    case ToolType.brighten:
-      processed = _adjustBrightness(src, 40);
-      break;
-    case ToolType.contrast:
-      processed = _adjustContrast(src, 1.5);
-      break;
-    case ToolType.rotate:
-      processed = img.copyRotate(src, 90);
-      break;
-    case ToolType.flip:
-      processed = img.flipHorizontal(src);
-      break;
-    case ToolType.blur:
-      processed = _applyBlur(src);
-      break;
-    default:
-      processed = src;
-  }
-
-  final outBytes = img.encodeJpg(processed, quality: 95);
-  return Uint8List.fromList(outBytes);
-}
-
-/// Apply sepia tone by manipulating each pixel.
-img.Image _applySepia(img.Image src) {
-  for (final p in src) {
-    final r = p.r.toInt();
-    final g = p.g.toInt();
-    final b = p.b.toInt();
-    final tr = (0.393 * r + 0.769 * g + 0.189 * b).toInt();
-    final tg = (0.349 * r + 0.686 * g + 0.168 * b).toInt();
-    final tb = (0.272 * r + 0.534 * g + 0.131 * b).toInt();
-    p
-      ..r = tr.clamp(0, 255)
-      ..g = tg.clamp(0, 255)
-      ..b = tb.clamp(0, 255);
-  }
-  return src;
-}
-
-/// Increase brightness by adding a fixed delta to each channel.
-img.Image _adjustBrightness(img.Image src, int delta) {
-  for (final p in src) {
-    p
-      ..r = (p.r.toInt() + delta).clamp(0, 255)
-      ..g = (p.g.toInt() + delta).clamp(0, 255)
-      ..b = (p.b.toInt() + delta).clamp(0, 255);
-  }
-  return src;
-}
-
-/// Increase contrast by multiplying each channel by factor.
-img.Image _adjustContrast(img.Image src, double factor) {
-  for (final p in src) {
-    final r = ((p.r.toInt() - 128) * factor + 128).round();
-    final g = ((p.g.toInt() - 128) * factor + 128).round();
-    final b = ((p.b.toInt() - 128) * factor + 128).round();
-    p
-      ..r = r.clamp(0, 255)
-      ..g = g.clamp(0, 255)
-      ..b = b.clamp(0, 255);
-  }
-  return src;
-}
-
-/// Simple box blur with radius 2.
-img.Image _applyBlur(img.Image src) {
-  final w = src.width;
-  final h = src.height;
-  // Create a copy to work from (read from original, write to copy)
-  final dst = img.Image(w, h);
-  for (int y = 0; y < h; y++) {
-    for (int x = 0; x < w; x++) {
-      int r = 0, g = 0, b = 0, count = 0;
-      for (int dy = -2; dy <= 2; dy++) {
-        for (int dx = -2; dx <= 2; dx++) {
-          final nx = (x + dx).clamp(0, w - 1);
-          final ny = (y + dy).clamp(0, h - 1);
-          final p = src.getPixel(nx, ny);
-          r += img.getRed(p);
-          g += img.getGreen(p);
-          b += img.getBlue(p);
-          count++;
-        }
-      }
-      dst.setPixelRgba(x, y, r ~/ count, g ~/ count, b ~/ count, 255);
-    }
-  }
-  return dst;
-}
-
 // ========== Storage helpers ==========
 class _Store {
   static String? _base;
@@ -572,6 +458,158 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   File? _pending;
   bool _busy = false;
   ToolType _selectedTool = ToolType.meitu;
+  String? _resultPath;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _loadHistory();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _persist();
+    }
+  }
+
+  Future<void> _loadHistory() async {
+    final saved = await _Store.loadMsgs();
+    if (saved.isNotEmpty) {
+      setState(() => _msgs = saved);
+    } else {
+      _welcome();
+    }
+  }
+
+  void _welcome() {
+    setState(() {
+      _msgs.add(ChatMessage(
+          text: '👋 你好！请选一张图片，然后选择工具进行处理！\n\n'
+              '顶部工具栏可以切换工具：\n'
+              '• 🤖 美图AI - 云端智能处理（需联网）\n'
+              '• 🎨 本地工具 - 免费、快速、无需网络\n'
+              '\n处理完的图片可放大查看，也可下载到手机！',
+          isUser: false,
+          time: DateTime.now()));
+    });
+  }
+
+  void _scroll() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrl.hasClients) {
+        _scrl.animateTo(_scrl.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+      }
+    });
+  }
+
+  Future<void> _pick() async {
+    if (_busy) return;
+    try {
+      final i = await _picker.pickImage(
+          source: ImageSource.gallery,
+          maxWidth: 1920,
+          maxHeight: 1920,
+          imageQuality: 90);
+      if (i != null) {
+        setState(() => _pending = File(i.path));
+        _msgs.add(ChatMessage(
+            text: '已选择图片，选择工具后点击发送',
+            isUser: false,
+            time: DateTime.now(),
+            imagePath: i.path));
+        setState(() {});
+        _scroll();
+        _persist();
+      }
+    } catch (_) {
+      _err('选择图片失败');
+    }
+  }
+
+  Future<void> _send() async {
+    final t = _txt.text.trim();
+    if (t.isEmpty && _pending == null) {
+      _err('请先选择图片');
+      return;
+    }
+    if (_pending == null) {
+      _err('请先选择图片');
+      return;
+    }
+
+    final desc = t.isNotEmpty ? t : '使用${_selectedTool.label}处理';
+    final userMsg = ChatMessage(
+        text: desc,
+        isUser: true,
+        time: DateTime.now(),
+        imagePath: _pending?.path);
+    setState(() {
+      _busy = true;
+      _msgs.add(userMsg);
+    });
+    _txt.clear();
+    _scroll();
+
+    if (_selectedTool.isLocal) {
+      await _processLocal(t);
+    } else {
+      await _processMeitu(t);
+    }
+
+    setState(() {
+      _pending = null;
+      _busy = false;
+    });
+  }
+
+  // ===== Meitu API processing =====
+  Future<void> _processMeitu(String text) async {
+    try {
+      _addLoading('⏳ 正在调用美图API处理，请稍候...');
+      final data = await _post('/api/edit', text, _pending);
+      if (data.containsKey('error')) {
+        _replace('❌ 处理失败：${data['error']}');
+        return;
+      }
+      final exp = data['explanation'] ?? '处理完成';
+      final rp = data['result_image_url'];
+      final tu = data['tool_used'];
+      final cc = data['credit_consumed'];
+      final cr = data['credit_remaining'];
+      String r = '✅ $exp\n\n🔧 $tu\n';
+      if (cc != null) r += '💳 消耗积分：$cc\n';
+      if (cr != null) r += '📊 剩余积分：$cr';
+      if (rp != null && rp is String) {
+        final bytes = await _getBytes(rp);
+        if (bytes.isNotEmpty) {
+          final localPath = await _Store.saveResultImage(bytes, 'meitu');
+          _resultPath = localPath;
+          _saveEditRecord(desc: text.isNotEmpty ? text : '美图AI修图',
+              tool: '美图AI ($tu)',
+              beforePath: _pending!.path,
+              afterPath: localPath);
+          _replaceWithImage('$r\n\n点击图片放大查看，点击 📥 下载到手机', localPath);
+        } else {
+          _replace('$r\n\n⚠️ 结果图片下载失败');
+        }
+      } else {
+        _replace('$r\n\n⚠️ 未返回处理结果图片');
+      }
+    } catch (e) {
+      _replace('❌ 网络错误：$e');
+    }
+    _scroll();
+  }
+
+  // ===== Local tool processing =====
+  Future<void> _processLocal(String text) async {
+    // Local tools temporarily use Meitu API
+    await _processMeitu(text);
+  }
   String? _resultPath;
 
   @override
