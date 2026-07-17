@@ -40,8 +40,20 @@ jobs:
           cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
           cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
           cd /tmp/ab
-          flutter pub add image_picker path_provider permission_handler
-          flutter build apk --release
+          flutter pub add image_picker path_provider permission_handler 2>&1 | tee /tmp/pub-add.log
+          flutter build apk --release 2>&1 | tee /tmp/build.log
+        continue-on-error: false
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            /tmp/pub-add.log
+            /tmp/build.log
+            /tmp/ab/**/flutter_build.log
+          retention-days: 1
 
       - name: Sign APK
         run: |
