@@ -148,7 +148,8 @@ class _ChatScreenState extends State<ChatScreen> {
     } else {
       setState(() => _msgs = [ChatMessage(
         text: '欢迎使用AI修图！\n\n示例指令：\n• 把背景换成海边\n• 帮我去掉水印\n• 贺泽两字改为天天\n• 图片清晰度调高\n• 把这张图抠出来',
-        isUser: false)]);  
+        isUser: false,
+        time: DateTime.now())]);  
     }
   }
 
