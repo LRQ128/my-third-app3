@@ -58,15 +58,26 @@ jobs:
 
       - name: Sign APK
         if: success()
+        shell: bash
         run: |
           set -x
           APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
-          test -f "$APK" || exit 1
+          test -f "$APK" || { echo "APK not found"; exit 1; }
+          # Find ANDROID_HOME
+          if [ -z "$ANDROID_HOME" ]; then
+            ANDROID_HOME=$(find / -name "build-tools" -path "*/android*" -type d 2>/dev/null | head -1 | xargs dirname)
+            echo "ANDROID_HOME auto-detected: $ANDROID_HOME"
+          fi
+          APKSIGNER=$(ls -d ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          if [ -z "$APKSIGNER" ]; then
+            APKSIGNER=$(which apksigner 2>/dev/null || find / -name apksigner -type f 2>/dev/null | head -1)
+          fi
+          echo "APKSIGNER: $APKSIGNER"
+          test -f "$APKSIGNER" || { echo "apksigner not found"; exit 1; }
           keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
             -keyalg RSA -keysize 2048 -validity 36500 \
             -storepass app123456 -keypass app123456 \
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
-          APKSIGNER=$(ls -d ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
           $APKSIGNER sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
             --ks-pass pass:app123456 --key-pass pass:app123456 \
             --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true "$APK"
