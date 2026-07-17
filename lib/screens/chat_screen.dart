@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import '../models/chat_message.dart';
 
 // Backend: TCP to IP (no DNS) + TLS upgrade with SNI.
@@ -81,13 +82,53 @@ Future<Uint8List> _getBytes(String url) async {
   } finally { s.close(); }
 }
 
+
+// ========== Chat persistence ==========
+class _Store {
+  static String? _base;
+
+  static Future<String> get _dir async {
+    if (_base == null) {
+      final d = await getApplicationDocumentsDirectory();
+      final b = Directory('${d.path}/xiutu_data');
+      if (!b.existsSync()) b.createSync(recursive: true);
+      _base = b.path;
+    }
+    return _base!;
+  }
+
+  static Future<List<ChatMessage>> load() async {
+    final f = File('${await _dir}/msgs.json');
+    if (!f.existsSync()) return [];
+    try {
+      return (jsonDecode(await f.readAsString()) as List).map((e) =>
+        ChatMessage(
+          text: e['t'] ?? '',
+          isUser: e['u'] ?? false,
+          time: DateTime.parse(e['ts']),
+          imagePath: e['ip'],
+          resultImageUrl: e['rp'],
+        )).toList();
+    } catch (_) { return []; }
+  }
+
+  static Future<void> save(List<ChatMessage> msgs) async {
+    if (msgs.isEmpty) return;
+    await File('${await _dir}/msgs.json').writeAsString(jsonEncode(
+      msgs.map((m) => {
+        't': m.text, 'u': m.isUser, 'ts': m.time.toIso8601String(),
+        'ip': m.imagePath, 'rp': m.resultImageUrl,
+      }).toList()));
+  }
+}
+
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
   @override State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
-  final List<ChatMessage> _msgs = [];
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
+  List<ChatMessage> _msgs = [];
   final TextEditingController _txt = TextEditingController();
   final ScrollController _scrl = ScrollController();
   final ImagePicker _picker = ImagePicker();
@@ -96,7 +137,27 @@ class _ChatScreenState extends State<ChatScreen> {
   Uint8List? _resultBytes;
 
   @override
-  void initState() { super.initState(); _welcome(); }
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _loadHistory();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _persist();
+    }
+  }
+
+  Future<void> _loadHistory() async {
+    final saved = await _Store.load();
+    if (saved.isNotEmpty) {
+      setState(() => _msgs = saved);
+    } else {
+      _welcome();
+    }
+  }
   void _welcome() { setState(() { _msgs.add(ChatMessage(text: '👋 你好！发一张图片和你的修图需求给我，我来帮你处理！\n\n例如：\n• 「把背景换成海边」\n• 「帮我去掉水印」\n• 「把文字\'你好\'改成\'再见\'」\n• 「给我加个复古滤镜」\n• 「把这张图抠出来」', isUser: false, time: DateTime.now())); }); }
   void _scroll() { WidgetsBinding.instance.addPostFrameCallback((_) { if (_scrl.hasClients) _scrl.animateTo(_scrl.position.maxScrollExtent, duration: const Duration(milliseconds: 300), curve: Curves.easeOut); }); }
 
@@ -104,7 +165,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_busy) return;
     try {
       final i = await _picker.pickImage(source: ImageSource.gallery, maxWidth: 1920, maxHeight: 1920, imageQuality: 90);
-      if (i != null) { setState(() => _pending = File(i.path)); _msgs.add(ChatMessage(text: '已选择图片，请输入修图需求', isUser: false, time: DateTime.now(), imagePath: i.path)); _scroll(); }
+      if (i != null) { setState(() { _pending = File(i.path); _msgs.add(ChatMessage(text: '已选择图片，请输入修图需求', isUser: false, time: DateTime.now(), imagePath: i.path)); }); _scroll(); _persist(); }
     } catch (_) { _err('选择图片失败'); }
   }
 
@@ -139,11 +200,21 @@ class _ChatScreenState extends State<ChatScreen> {
     _scroll();
   }
 
-  void _replace(String t) { setState(() { if (_msgs.isNotEmpty && _msgs.last.isLoading) _msgs.removeLast(); _msgs.add(ChatMessage(text: t, isUser: false, time: DateTime.now())); }); }
+  void _replace(String t) { setState(() { if (_msgs.isNotEmpty && _msgs.last.isLoading) _msgs.removeLast(); _msgs.add(ChatMessage(text: t, isUser: false, time: DateTime.now())); }); _persist(); }
   void _err(String m) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m), behavior: SnackBarBehavior.floating)); }
 
   @override
-  void dispose() { _txt.dispose(); _scrl.dispose(); super.dispose(); }
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _persist();
+    _txt.dispose();
+    _scrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _persist() async {
+    try { await _Store.save(_msgs); } catch (_) {}
+  }
 
   @override
   Widget build(BuildContext context) {
