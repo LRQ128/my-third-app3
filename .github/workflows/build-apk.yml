@@ -43,13 +43,30 @@ jobs:
           cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
           cd /tmp/ab
           flutter pub add image_picker path_provider permission_handler
-          flutter build apk --release
+          echo "========= PUBSPEC ========="
+          cat pubspec.yaml
+          echo "========= DART ANALYZE ========="
+          dart analyze lib/ 2>&1 | tee /tmp/analyze-log.txt || true
+          echo "========= FLUTTER BUILD ========="
+          flutter build apk --release 2>&1 | tee /tmp/build-log.txt
+          echo "========= BUILD EXIT CODE: $? ========="
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            /tmp/analyze-log.txt
+            /tmp/build-log.txt
+            /tmp/ab/build/**/*.log
+          retention-days: 3
 
       - name: Sign APK
         run: |
           set -x
           APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
-          test -f "$APK" || { echo "APK not found!"; exit 1; }
+          test -f "$APK" || { echo "APK not found at $APK"; ls -la /tmp/ab/build/app/outputs/flutter-apk/ 2>/dev/null || true; exit 1; }
           keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
             -keyalg RSA -keysize 2048 -validity 36500 \
             -storepass app123456 -keypass app123456 \
