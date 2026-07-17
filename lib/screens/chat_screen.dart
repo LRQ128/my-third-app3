@@ -100,10 +100,11 @@ Future<Map<String, dynamic>> _post(String path, String text, File img) async {
 
     } on SocketException catch (e) {
       // errno=103 = Software caused connection abort (app switched to background)
-      if (e.osError?.errorCode == 103 && attempt < 1) {
+      // Retry up to 3 times with increasing delays to survive background switches
+      if (e.osError?.errorCode == 103 && attempt < 3) {
         attempt++;
-        await Future.delayed(const Duration(seconds: 1));
-        continue; // retry once
+        await Future.delayed(Duration(seconds: attempt * 2));
+        continue;
       }
       rethrow;
     } finally { client.close(); }
@@ -129,7 +130,7 @@ class ChatScreen extends StatefulWidget {
   @override State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final TextEditingController _txt = TextEditingController();
   List<ChatMessage> _msgs = [];
   XFile? _selected;
@@ -138,7 +139,24 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadHistory();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Save chat history when app goes to background or is paused
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _persist();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _persist(); // Save on dispose too
+    _txt.dispose();
+    super.dispose();
   }
 
   Future<void> _loadHistory() async {
@@ -239,9 +257,6 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _persist() async {
     try { await _Store.save(_msgs); } catch (_) {}
   }
-
-  @override
-  void dispose() { _txt.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
