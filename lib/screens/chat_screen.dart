@@ -68,7 +68,7 @@ Future<Map<String, dynamic>> _post(String path, String text, File img) async {
   int attempt = 0;
 
   while (true) {
-    final client = HttpClient(context: SecurityContext(withTrustedRoots: false))
+    final client = HttpClient()
       ..badCertificateCallback = (_) => true;
     try {
       final uri = Uri.parse('$_kUrl$path');
@@ -111,7 +111,7 @@ Future<Map<String, dynamic>> _post(String path, String text, File img) async {
 }
 
 Future<Uint8List> _get(String path) async {
-  final client = HttpClient(context: SecurityContext(withTrustedRoots: false))
+  final client = HttpClient()
     ..badCertificateCallback = (_) => true;
   try {
     final uri = Uri.parse('$_kUrl$path');
