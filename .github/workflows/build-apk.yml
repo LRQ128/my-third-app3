@@ -5,6 +5,10 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+env:
+  PUB_HOSTED_URL: https://pub.flutter-io.cn
+  FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
+
 jobs:
   build:
     permissions:
@@ -30,14 +34,15 @@ jobs:
       - name: Build APK
         run: |
           flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
-          rm -rf /tmp/ab/lib/ /tmp/ab/pubspec.yaml
-          cp "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/ -r
-          cp "${GITHUB_WORKSPACE}/server" /tmp/ab/server/ -r
+          rm -rf /tmp/ab/lib/
+          cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
+          cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
+
+          # Override AndroidManifest with our own (which has INTERNET + all permissions)
           cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
-          cp "${GITHUB_WORKSPACE}/pubspec.yaml" /tmp/ab/pubspec.yaml
-          cp "${GITHUB_WORKSPACE}/assets" /tmp/ab/assets -r 2>/dev/null || true
+          
           cd /tmp/ab
-          flutter pub get
+          flutter pub add image_picker http path_provider permission_handler mime
           flutter build apk --release
 
       - name: Sign APK
