@@ -31,24 +31,20 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Build APK
+      - name: Build & Sign
         run: |
           set -ex
-          max_retry=2
-          for attempt in $(seq 0 $max_retry); do
-            if [ $attempt -gt 0 ]; then echo "Retry $attempt..."; sleep 30; fi
-            flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
-            rm -rf /tmp/ab/lib/
-            cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
-            cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
-            cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
-            cd /tmp/ab
-            flutter pub add image_picker http path_provider permission_handler mime
-            flutter build apk --release && break || echo "Attempt $attempt failed"
-          done
-
-      - name: Sign APK
-        run: |
+          # Build
+          flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
+          rm -rf /tmp/ab/lib/
+          cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
+          cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
+          cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
+          cd /tmp/ab
+          flutter pub add image_picker path_provider permission_handler
+          flutter build apk --release
+          
+          # Sign
           APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
           keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
             -keyalg RSA -keysize 2048 -validity 36500 \
@@ -59,6 +55,11 @@ jobs:
             --ks-pass pass:app123456 --key-pass pass:app123456 \
             --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true $APK
           $APKSIGNER verify --verbose $APK
+          
+          # Copy to workspace for Release step
+          cp $APK "${GITHUB_WORKSPACE}/app-release.apk"
+          ls -la "${GITHUB_WORKSPACE}/app-release.apk"
+          echo "✅ Build & Sign done"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -67,6 +68,7 @@ jobs:
           name: AI修图 v${{ github.run_number }}
           body: |
             ## AI修图 App v${{ github.run_number }}
-            自动构建发布版本
-          files: /tmp/ab/build/app/outputs/flutter-apk/app-release.apk
+            - errno=103切后台自动重试3次
+            - 聊天记录持久化(关闭重开保存历史)
+          files: ${{ github.workspace }}/app-release.apk
           generate_release_notes: false
