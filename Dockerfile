@@ -7,7 +7,7 @@
 
 FROM python:3.12-slim
 
-# 安装Node.js + 系统依赖（Tesseract OCR用于改字功能）
+# Step 1: 系统基础包 + Tesseract OCR（改字功能需要）
 RUN set -ex \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -17,8 +17,12 @@ RUN set -ex \
         tesseract-ocr \
         tesseract-ocr-chi-sim \
         tesseract-ocr-chi-tra \
-        libgl1-mesa-glx \
+        libgl1 \
         libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Step 2: 安装 Node.js 20
+RUN set -ex \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
@@ -26,15 +30,15 @@ RUN set -ex \
 
 WORKDIR /app
 
-# 安装 Node.js 依赖
+# Step 3: 安装 Node.js 依赖
 COPY package.json package-lock.json* ./
 RUN npm install && npm cache clean --force
 
-# 安装 Python 依赖（免费工具：rembg抠图、OpenCV处理、Tesseract改字）
+# Step 4: 安装 Python 依赖（先复制requirements.txt）
 COPY server/requirements.txt ./server/requirements.txt
 RUN pip install --no-cache-dir -r server/requirements.txt
 
-# 复制全部代码
+# Step 5: 复制全部代码
 COPY . .
 
 # 环境变量
