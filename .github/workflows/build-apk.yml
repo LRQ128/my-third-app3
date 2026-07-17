@@ -49,26 +49,18 @@ jobs:
         run: |
           set -x
           APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
-          test -f "$APK" || { echo "APK not found"; exit 1; }
-          which java
-          java -version
-          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -f "$APK" || { echo "APK not found!"; exit 1; }
           keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
             -keyalg RSA -keysize 2048 -validity 36500 \
             -storepass app123456 -keypass app123456 \
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
-          APKSIGNER=$(find / -path "*/build-tools/*/apksigner" -type f 2>/dev/null | head -1)
-          if [ -z "$APKSIGNER" ]; then
-            APKSIGNER=$(find / -name "apksigner" -type f 2>/dev/null | head -1)
-          fi
-          echo "APKSIGNER=$APKSIGNER"
-          "$APKSIGNER" sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
+          APKSIGNER=$(ls -d ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          $APKSIGNER sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
             --ks-pass pass:app123456 --key-pass pass:app123456 \
             --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true "$APK"
-          "$APKSIGNER" verify --verbose "$APK"
+          $APKSIGNER verify --verbose "$APK"
 
       - name: Create Release
-        if: success()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
