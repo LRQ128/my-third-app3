@@ -31,7 +31,7 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Build APK
+      - name: Build and Sign APK
         shell: bash
         run: |
           set -x
@@ -44,40 +44,18 @@ jobs:
           cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
           cd /tmp/ab
           flutter pub add image_picker path_provider permission_handler
-          echo "=== ANALYZE ==="
-          dart analyze lib/ 2>&1 || true
-          echo "=== BUILD ==="
-          flutter build apk --release 2>&1 || flutter build apk --release --verbose 2>&1 || true
-          echo "=== DONE ==="
+          flutter build apk --release
 
-      - name: Check APK
-        run: |
-          APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
-          ls -la "$APK" 2>/dev/null || echo "APK NOT FOUND at $APK"
-          ls -la /tmp/ab/build/app/outputs/flutter-apk/ 2>/dev/null || echo "No build output dir"
-
-      - name: Sign APK
-        if: success()
-        shell: bash
-        run: |
-          set -x
+          # Sign
           APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
           test -f "$APK" || { echo "APK not found"; exit 1; }
-          # Find ANDROID_HOME
-          if [ -z "$ANDROID_HOME" ]; then
-            ANDROID_HOME=$(find / -name "build-tools" -path "*/android*" -type d 2>/dev/null | head -1 | xargs dirname)
-            echo "ANDROID_HOME auto-detected: $ANDROID_HOME"
-          fi
-          APKSIGNER=$(ls -d ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
-          if [ -z "$APKSIGNER" ]; then
-            APKSIGNER=$(which apksigner 2>/dev/null || find / -name apksigner -type f 2>/dev/null | head -1)
-          fi
-          echo "APKSIGNER: $APKSIGNER"
-          test -f "$APKSIGNER" || { echo "apksigner not found"; exit 1; }
+          echo "ANDROID_HOME=$ANDROID_HOME"
           keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
             -keyalg RSA -keysize 2048 -validity 36500 \
             -storepass app123456 -keypass app123456 \
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
+          APKSIGNER=$(find / -name apksigner -type f 2>/dev/null | head -1)
+          echo "apksigner=$APKSIGNER"
           $APKSIGNER sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
             --ks-pass pass:app123456 --key-pass pass:app123456 \
             --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true "$APK"
