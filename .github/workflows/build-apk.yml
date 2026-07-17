@@ -42,14 +42,6 @@ jobs:
             cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/ && \
             cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/ && \
             cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml && \
-            keytool -genkey -v -keystore /tmp/ab/android/app/release.jks -alias my-third-app3 \
-              -keyalg RSA -keysize 2048 -validity 36500 \
-              -storepass mypass123 -keypass mypass123 \
-              -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN" && \
-            echo "storePassword=mypass123
-keyPassword=mypass123
-keyAlias=my-third-app3
-storeFile=release.jks" > /tmp/ab/android/key.properties && \
             cd /tmp/ab && \
             flutter pub add image_picker path_provider permission_handler && \
             flutter build apk --release && \
@@ -57,17 +49,30 @@ storeFile=release.jks" > /tmp/ab/android/key.properties && \
             break || echo "Attempt $attempt failed"
           done
 
-      - name: Verify & Release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Sign & Release
         run: |
           set -ex
           APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
-          test -f "$APK" || { echo "No APK!"; find /tmp/ab/build -name "*.apk"; exit 1; }
-          echo "APK size: $(stat --printf=%s $APK 2>/dev/null || wc -c < $APK)"
+          test -f "$APK" || { echo "No APK!"; exit 1; }
+          echo "APK: $(stat --printf=%s $APK) bytes"
           
+          # Generate keystore
+          keytool -genkey -v -keystore /tmp/release.jks -alias key0 \
+            -keyalg RSA -keysize 2048 -validity 36500 \
+            -storepass abc123 -keypass abc123 \
+            -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
+          
+          # Use jarsigner from JAVA_HOME
+          JARSIGNER="${JAVA_HOME}/bin/jarsigner"
+          echo "Using: $JARSIGNER"
+          "$JARSIGNER" -verbose -sigalg SHA1withRSA -digestalg SHA1 \
+            -keystore /tmp/release.jks -storepass abc123 -keypass abc123 \
+            "$APK" key0
+          echo "Sign exit code: $?"
+          
+          # Create release
           TAG="v${{ github.run_number }}"
-          gh release create "$TAG" "$APK" \
+          GH_TOKEN=${{ github.token }} gh release create "$TAG" "$APK" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "AI修图 v${{ github.run_number }}" \
             --notes "修图App v${{ github.run_number }}" \
