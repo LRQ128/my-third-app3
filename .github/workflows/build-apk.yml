@@ -13,7 +13,6 @@ jobs:
   build:
     permissions:
       contents: write
-      actions: read
     runs-on: ubuntu-latest
 
     steps:
@@ -32,12 +31,13 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Build APK
+      - name: Build & Sign & Release
         run: |
           set -ex
           max_retry=2
           for attempt in $(seq 0 $max_retry); do
             if [ $attempt -gt 0 ]; then echo "Retry $attempt..."; sleep 30; fi
+            
             flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab && \
             rm -rf /tmp/ab/lib/ && \
             cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/ && \
@@ -46,47 +46,26 @@ jobs:
             cd /tmp/ab && \
             flutter pub add image_picker path_provider permission_handler && \
             flutter build apk --release && \
-            ls -la build/app/outputs/flutter-apk/app-release.apk && \
+            echo "Build done, signing..." && \
+            keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
+              -keyalg RSA -keysize 2048 -validity 36500 \
+              -storepass app123456 -keypass app123456 \
+              -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN" && \
+            echo "ANDROID_HOME: ${ANDROID_HOME}" && \
+            echo "Build tools:" && \
+            ls ${ANDROID_HOME}/build-tools/ && \
+            APKSIGNER=$(ls ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1) && \
+            echo "apksigner: $APKSIGNER" && \
+            "$APKSIGNER" sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
+              --ks-pass pass:app123456 --key-pass pass:app123456 \
+              --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+              build/app/outputs/flutter-apk/app-release.apk && \
+            "$APKSIGNER" verify --verbose build/app/outputs/flutter-apk/app-release.apk 2>&1 && \
+            echo "Sign verified!" && \
             break || echo "Attempt $attempt failed"
           done
 
-      - name: Sign APK
-        run: |
-          set -ex
-          APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
-          test -f "$APK" || { echo "APK not found!"; exit 1; }
-          
-          # Check if APK is already signed v1+v2
-          python3 -c "
-import zipfile, sys
-with zipfile.ZipFile(sys.argv[1], 'r') as z:
-    names = z.namelist()
-    has_meta = any(n.startswith('META-INF/') for n in names)
-    has_sigblk = any('.SIG' in n or 'APK' in n for n in names)
-    print(f'META-INF: {\"✅\" if has_meta else \"❌\"}')
-    print(f'SigBlock: {\"✅\" if has_sigblk else \"❌\"}')
-" "$APK"
-          
-          keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
-            -keyalg RSA -keysize 2048 -validity 36500 \
-            -storepass app123456 -keypass app123456 \
-            -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
-          
-          # Try apksigner first
-          APKSIGNER=$(ls -d ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1 || true)
-          if [ -n "$APKSIGNER" ]; then
-            echo "Using apksigner: $APKSIGNER"
-            "$APKSIGNER" sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
-              --ks-pass pass:app123456 --key-pass pass:app123456 "$APK"
-            "$APKSIGNER" verify --verbose "$APK" 2>&1
-          else
-            echo "apksigner not found, checking alternatives..."
-            which jarsigner || echo "no jarsigner"
-            find / -name "jarsigner" -type f 2>/dev/null || echo "no jarsigner anywhere"
-            exit 1
-          fi
-
-      - name: Create Release
+      - name: Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
