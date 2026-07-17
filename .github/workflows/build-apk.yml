@@ -33,14 +33,19 @@ jobs:
 
       - name: Build APK
         run: |
-          flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
-          rm -rf /tmp/ab/lib/
-          cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
-          cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
-          cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
-          cd /tmp/ab
-          flutter pub add image_picker http path_provider permission_handler mime
-          flutter build apk --release
+          set -ex
+          max_retry=2
+          for attempt in $(seq 0 $max_retry); do
+            if [ $attempt -gt 0 ]; then echo "Retry $attempt..."; sleep 30; fi
+            flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
+            rm -rf /tmp/ab/lib/
+            cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
+            cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
+            cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
+            cd /tmp/ab
+            flutter pub add image_picker http path_provider permission_handler mime
+            flutter build apk --release && break || echo "Attempt $attempt failed"
+          done
 
       - name: Sign APK
         run: |
