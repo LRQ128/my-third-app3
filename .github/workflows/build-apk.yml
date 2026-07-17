@@ -13,6 +13,7 @@ jobs:
   build:
     permissions:
       contents: write
+      actions: read
     runs-on: ubuntu-latest
 
     steps:
@@ -49,31 +50,50 @@ jobs:
             break || echo "Attempt $attempt failed"
           done
 
-      - name: Sign & Release
+      - name: Sign APK
         run: |
           set -ex
           APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
-          test -f "$APK" || { echo "No APK!"; exit 1; }
-          echo "APK: $(stat --printf=%s $APK) bytes"
+          test -f "$APK" || { echo "APK not found!"; exit 1; }
           
-          # Generate keystore
-          keytool -genkey -v -keystore /tmp/release.jks -alias key0 \
+          # Check if APK is already signed v1+v2
+          python3 -c "
+import zipfile, sys
+with zipfile.ZipFile(sys.argv[1], 'r') as z:
+    names = z.namelist()
+    has_meta = any(n.startswith('META-INF/') for n in names)
+    has_sigblk = any('.SIG' in n or 'APK' in n for n in names)
+    print(f'META-INF: {\"✅\" if has_meta else \"❌\"}')
+    print(f'SigBlock: {\"✅\" if has_sigblk else \"❌\"}')
+" "$APK"
+          
+          keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
             -keyalg RSA -keysize 2048 -validity 36500 \
-            -storepass abc123 -keypass abc123 \
+            -storepass app123456 -keypass app123456 \
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
           
-          # Use jarsigner from JAVA_HOME
-          JARSIGNER="${JAVA_HOME}/bin/jarsigner"
-          echo "Using: $JARSIGNER"
-          "$JARSIGNER" -verbose -sigalg SHA1withRSA -digestalg SHA1 \
-            -keystore /tmp/release.jks -storepass abc123 -keypass abc123 \
-            "$APK" key0
-          echo "Sign exit code: $?"
-          
-          # Create release
-          TAG="v${{ github.run_number }}"
-          GH_TOKEN=${{ github.token }} gh release create "$TAG" "$APK" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "AI修图 v${{ github.run_number }}" \
-            --notes "修图App v${{ github.run_number }}" \
-            --generate-notes=false
+          # Try apksigner first
+          APKSIGNER=$(ls -d ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$APKSIGNER" ]; then
+            echo "Using apksigner: $APKSIGNER"
+            "$APKSIGNER" sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
+              --ks-pass pass:app123456 --key-pass pass:app123456 "$APK"
+            "$APKSIGNER" verify --verbose "$APK" 2>&1
+          else
+            echo "apksigner not found, checking alternatives..."
+            which jarsigner || echo "no jarsigner"
+            find / -name "jarsigner" -type f 2>/dev/null || echo "no jarsigner anywhere"
+            exit 1
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: AI修图 v${{ github.run_number }}
+          body: |
+            ## AI修图 App v${{ github.run_number }}
+            - errno=103切后台自动重试3次
+            - 聊天记录持久化(关闭重开保存历史)
+          files: /tmp/ab/build/app/outputs/flutter-apk/app-release.apk
+          generate_release_notes: false
