@@ -5,10 +5,6 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
-env:
-  PUB_HOSTED_URL: https://pub.flutter-io.cn
-  FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
-
 jobs:
   build:
     permissions:
@@ -33,27 +29,16 @@ jobs:
 
       - name: Build APK
         run: |
-          set -ex
           flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab
-          rm -rf /tmp/ab/lib/
-          cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/
-          cp -r "${GITHUB_WORKSPACE}/server" /tmp/ab/server/
+          rm -rf /tmp/ab/lib/ /tmp/ab/pubspec.yaml
+          cp "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/ -r
+          cp "${GITHUB_WORKSPACE}/server" /tmp/ab/server/ -r
           cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
+          cp "${GITHUB_WORKSPACE}/pubspec.yaml" /tmp/ab/pubspec.yaml
+          cp "${GITHUB_WORKSPACE}/assets" /tmp/ab/assets -r 2>/dev/null || true
           cd /tmp/ab
-          flutter pub add image_picker path_provider permission_handler 2>&1 | tee /tmp/pub-add.log
-          flutter build apk --release 2>&1 | tee /tmp/build.log
-        continue-on-error: false
-
-      - name: Upload build logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
-            /tmp/pub-add.log
-            /tmp/build.log
-            /tmp/ab/**/flutter_build.log
-          retention-days: 1
+          flutter pub get
+          flutter build apk --release
 
       - name: Sign APK
         run: |
