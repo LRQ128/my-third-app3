@@ -244,7 +244,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _addMsg(dynamic textOrMsg, bool isUser) {
+  void _addMsg(dynamic textOrMsg, [bool isUser = false]) {
     setState(() {
       if (textOrMsg is String) {
         _msgs.add(ChatMessage(text: textOrMsg, isUser: isUser, time: DateTime.now()));

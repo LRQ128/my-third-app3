@@ -42,10 +42,7 @@ jobs:
           cp "${GITHUB_WORKSPACE}/android_overlay/app/src/main/AndroidManifest.xml" /tmp/ab/android/app/src/main/AndroidManifest.xml
           cd /tmp/ab
           flutter pub add image_picker path_provider permission_handler
-          # Debug: show compilation errors
-          cd /tmp/ab
-          dart analyze lib/ 2>&1 || true
-          flutter build apk --release 2>&1
+          flutter build apk --release
           
           # Sign
           APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
