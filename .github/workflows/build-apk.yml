@@ -54,37 +54,33 @@ jobs:
             break || echo "Attempt $attempt/$max_retry failed, retrying..."
           done
 
-      - name: Sign APK
+      - name: Sign & Release
         run: |
-          set -ex
+          set -e
           APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
           test -f "$APK" || { echo "APK not found!"; exit 1; }
+          echo "APK size: $(ls -lh "$APK" | awk '{print $5}')"
+          
+          # Generate keystore
           keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
             -keyalg RSA -keysize 2048 -validity 36500 \
             -storepass app123456 -keypass app123456 \
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
-          APKSIGNER=$(ls -d ${ANDROID_HOME}/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
-          echo "apksigner: $APKSIGNER"
-          $APKSIGNER sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
-            --ks-pass pass:app123456 --key-pass pass:app123456 \
-            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true "$APK"
-          $APKSIGNER verify --verbose "$APK"
-
-      - name: Upload build logs (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: /tmp/ab/build/**/*.log
-          retention-days: 1
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_number }}
-          name: AI修图 v${{ github.run_number }}
-          body: |
-            ## AI修图 App v${{ github.run_number }}
-            自动构建发布版本
-          files: /tmp/ab/build/app/outputs/flutter-apk/app-release.apk
-          generate_release_notes: false
+          echo "Keystore created"
+          
+          # Sign using jarsigner (always available with JDK)
+          jarsigner -verbose -keystore /tmp/release.jks -storepass app123456 \
+            -keypass app123456 -digestalg SHA1 -sigalg SHA1withRSA \
+            "$APK" my-third-app3
+          echo "jarsigner done"
+          
+          # Create release
+          TAG="v${{ github.run_number }}"
+          echo "Creating release $TAG..."
+          # Use GITHUB_TOKEN for gh CLI
+          GH_TOKEN=${{ github.token }} gh release create "$TAG" "$APK" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "AI修图 v${{ github.run_number }}" \
+            --notes "- errno=103切后台自动重试3次\n-聊天记录持久化(关闭重开保存历史)" \
+            --generate-notes=false
+          echo "Release $TAG created"
