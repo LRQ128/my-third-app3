@@ -224,7 +224,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           final bytes = await _get(rp);
           if (bytes.isNotEmpty) {
             final localPath = await _Store.saveImg(bytes, 'result');
-            _addMsg(ChatMessage(text: r, isUser: false, time: DateTime.now(), resultImageUrl: localPath), false);
+            _addMsg(ChatMessage(text: r, isUser: false, time: DateTime.now(), resultImageUrl: localPath));
           } else {
             _addMsg('$r\n⚠️ 结果图片为空', false);
           }
@@ -244,12 +244,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _addMsg(dynamic textOrMsg, [bool isUser = false]) {
+  void _addMsg(dynamic textOrMsg, bool isUser) {
     setState(() {
-      if (textOrMsg is ChatMessage) {
-        _msgs.add(textOrMsg);
-      } else if (textOrMsg is String) {
+      if (textOrMsg is String) {
         _msgs.add(ChatMessage(text: textOrMsg, isUser: isUser, time: DateTime.now()));
+      } else if (textOrMsg is ChatMessage) {
+        _msgs.add(textOrMsg);
       }
     });
   }
