@@ -31,8 +31,7 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Build and Sign APK
-        shell: bash
+      - name: Build APK
         run: |
           set -x
           flutter --version
@@ -46,20 +45,27 @@ jobs:
           flutter pub add image_picker path_provider permission_handler
           flutter build apk --release
 
-          # Sign
+      - name: Sign APK
+        run: |
+          set -x
           APK=/tmp/ab/build/app/outputs/flutter-apk/app-release.apk
           test -f "$APK" || { echo "APK not found"; exit 1; }
+          which java
+          java -version
           echo "ANDROID_HOME=$ANDROID_HOME"
           keytool -genkey -v -keystore /tmp/release.jks -alias my-third-app3 \
             -keyalg RSA -keysize 2048 -validity 36500 \
             -storepass app123456 -keypass app123456 \
             -dname "CN=LRQ128, OU=Dev, O=Personal, L=BJ, ST=BJ, C=CN"
-          APKSIGNER=$(find / -name apksigner -type f 2>/dev/null | head -1)
-          echo "apksigner=$APKSIGNER"
-          $APKSIGNER sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
+          APKSIGNER=$(find / -path "*/build-tools/*/apksigner" -type f 2>/dev/null | head -1)
+          if [ -z "$APKSIGNER" ]; then
+            APKSIGNER=$(find / -name "apksigner" -type f 2>/dev/null | head -1)
+          fi
+          echo "APKSIGNER=$APKSIGNER"
+          "$APKSIGNER" sign --ks /tmp/release.jks --ks-key-alias my-third-app3 \
             --ks-pass pass:app123456 --key-pass pass:app123456 \
             --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true "$APK"
-          $APKSIGNER verify --verbose "$APK"
+          "$APKSIGNER" verify --verbose "$APK"
 
       - name: Create Release
         if: success()
