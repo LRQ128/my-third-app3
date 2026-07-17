@@ -42,6 +42,7 @@ jobs:
               echo "Retry attempt $attempt/$max_retry after ${retry_delay}s..."
               sleep $retry_delay
             fi
+            flutter --version && \
             flutter create --project-name my_third_app3 --org com.lrq128 --platforms android /tmp/ab && \
             rm -rf /tmp/ab/lib/ && \
             cp -r "${GITHUB_WORKSPACE}/lib" /tmp/ab/lib/ && \
