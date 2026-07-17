@@ -113,6 +113,7 @@ enum ToolType {
   const ToolType(this.label, this.icon, this.isLocal);
 }
 
+/// Process an image file using a local tool (no network needed).
 Future<Uint8List> _processLocalTool(File imageFile, ToolType tool) async {
   final bytes = await imageFile.readAsBytes();
   final src = img.decodeImage(bytes);
@@ -127,10 +128,10 @@ Future<Uint8List> _processLocalTool(File imageFile, ToolType tool) async {
       processed = _applySepia(src);
       break;
     case ToolType.brighten:
-      processed = img.adjustColor(src, brightness: 0.3);
+      processed = _adjustBrightness(src, 40);
       break;
     case ToolType.contrast:
-      processed = img.adjustColor(src, contrast: 1.5);
+      processed = _adjustContrast(src, 1.5);
       break;
     case ToolType.rotate:
       processed = img.copyRotate(src, 90);
@@ -145,15 +146,13 @@ Future<Uint8List> _processLocalTool(File imageFile, ToolType tool) async {
       processed = src;
   }
 
-  final ext = imageFile.path.endsWith('.png') ? '.png' : '.jpg';
-  final outBytes =
-      ext == '.png' ? img.encodePng(processed) : img.encodeJpg(processed, quality: 95);
+  final outBytes = img.encodeJpg(processed, quality: 95);
   return Uint8List.fromList(outBytes);
 }
 
+/// Apply sepia tone by manipulating each pixel.
 img.Image _applySepia(img.Image src) {
-  final dst = img.Image.from(src);
-  for (final p in dst) {
+  for (final p in src) {
     final r = p.r.toInt();
     final g = p.g.toInt();
     final b = p.b.toInt();
@@ -165,25 +164,51 @@ img.Image _applySepia(img.Image src) {
       ..g = tg.clamp(0, 255)
       ..b = tb.clamp(0, 255);
   }
-  return dst;
+  return src;
 }
 
+/// Increase brightness by adding a fixed delta to each channel.
+img.Image _adjustBrightness(img.Image src, int delta) {
+  for (final p in src) {
+    p
+      ..r = (p.r.toInt() + delta).clamp(0, 255)
+      ..g = (p.g.toInt() + delta).clamp(0, 255)
+      ..b = (p.b.toInt() + delta).clamp(0, 255);
+  }
+  return src;
+}
+
+/// Increase contrast by multiplying each channel by factor.
+img.Image _adjustContrast(img.Image src, double factor) {
+  for (final p in src) {
+    final r = ((p.r.toInt() - 128) * factor + 128).round();
+    final g = ((p.g.toInt() - 128) * factor + 128).round();
+    final b = ((p.b.toInt() - 128) * factor + 128).round();
+    p
+      ..r = r.clamp(0, 255)
+      ..g = g.clamp(0, 255)
+      ..b = b.clamp(0, 255);
+  }
+  return src;
+}
+
+/// Simple box blur with radius 2.
 img.Image _applyBlur(img.Image src) {
-  final radius = 3;
   final w = src.width;
   final h = src.height;
-  final dst = img.Image.from(src);
+  // Create a copy to work from (read from original, write to copy)
+  final dst = img.Image(w, h);
   for (int y = 0; y < h; y++) {
     for (int x = 0; x < w; x++) {
       int r = 0, g = 0, b = 0, count = 0;
-      for (int dy = -radius; dy <= radius; dy++) {
-        for (int dx = -radius; dx <= radius; dx++) {
+      for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
           final nx = (x + dx).clamp(0, w - 1);
           final ny = (y + dy).clamp(0, h - 1);
           final p = src.getPixel(nx, ny);
-          r += p.r.toInt();
-          g += p.g.toInt();
-          b += p.b.toInt();
+          r += img.getRed(p);
+          g += img.getGreen(p);
+          b += img.getBlue(p);
           count++;
         }
       }
