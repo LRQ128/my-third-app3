@@ -4,14 +4,16 @@
 被 server/index.js 调用:
   python3 server/free_tools.py <tool_name> <input_image> <output_image> [extra_args...]
 输出JSON到stdout
+
+改字功能(text-replace)使用百度OCR API替代Tesseract，提升中文识别率
+环境变量: BAIDU_OCR_API_KEY, BAIDU_OCR_SECRET_KEY
 """
-import sys, json, os, re, traceback
+import sys, json, os, re, traceback, time, base64, urllib.request, urllib.parse
 import numpy as np
 
 # Lazy imports
 _rembg = None
 _cv2 = None
-_pytesseract = None
 
 def _get_rembg():
     global _rembg
@@ -27,13 +29,79 @@ def _get_cv2():
         _cv2 = c
     return _cv2
 
-def _get_tesseract():
-    global _pytesseract
-    if _pytesseract is None:
-        import pytesseract as t
-        _pytesseract = t
-    return _pytesseract
 
+# ===================== 百度OCR Token管理 =====================
+_BAIDU_TOKEN_CACHE = "/tmp/baidu_ocr_token.json"
+
+def _get_baidu_token():
+    api_key = os.environ.get("BAIDU_OCR_API_KEY", "")
+    secret_key = os.environ.get("BAIDU_OCR_SECRET_KEY", "")
+    if not api_key or not secret_key:
+        raise RuntimeError("缺少百度OCR环境变量: BAIDU_OCR_API_KEY / BAIDU_OCR_SECRET_KEY")
+
+    # 检查缓存
+    if os.path.exists(_BAIDU_TOKEN_CACHE):
+        try:
+            with open(_BAIDU_TOKEN_CACHE, "r") as f:
+                cached = json.load(f)
+            if cached.get("api_key") == api_key and cached.get("secret_key") == secret_key and time.time() < cached.get("expires_at", 0):
+                return cached["access_token"]
+        except:
+            pass
+
+    # 请求新token
+    url = f"https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id={urllib.parse.quote(api_key)}&client_secret={urllib.parse.quote(secret_key)}"
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode())
+
+    if "access_token" not in data:
+        raise RuntimeError(f"百度OCR获取token失败: {data.get('error_description', str(data))}")
+
+    token = data["access_token"]
+    expires_in = data.get("expires_in", 2592000)
+    # 提前1小时过期，安全
+    expires_at = time.time() + expires_in - 3600
+
+    os.makedirs(os.path.dirname(_BAIDU_TOKEN_CACHE), exist_ok=True)
+    with open(_BAIDU_TOKEN_CACHE, "w") as f:
+        json.dump({"api_key": api_key, "secret_key": secret_key, "access_token": token, "expires_at": expires_at}, f)
+    return token
+
+
+def _baidu_ocr(inp_image_path):
+    """调用百度OCR通用文字识别(带位置)，返回 [{words, left, top, width, height}, ...]"""
+    with open(inp_image_path, "rb") as f:
+        img_b64 = base64.b64encode(f.read()).decode()
+
+    token = _get_baidu_token()
+    url = f"https://aip.baidubce.com/rest/2.0/ocr/v1/general?access_token={urllib.parse.quote(token)}"
+
+    data = urllib.parse.urlencode({"image": img_b64}).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        result = json.loads(resp.read().decode())
+
+    if "error_code" in result:
+        raise RuntimeError(f"百度OCR识别失败: {result.get('error_msg', str(result))}")
+
+    words_result = result.get("words_result", [])
+    boxes = []
+    for item in words_result:
+        text = item.get("words", "").strip()
+        loc = item.get("location", {})
+        if text and loc.get("width", 0) > 5 and loc.get("height", 0) > 5:
+            boxes.append({
+                "words": text,
+                "left": loc["left"],
+                "top": loc["top"],
+                "width": loc["width"],
+                "height": loc["height"]
+            })
+    return boxes
+
+
+# ===================== 工具函数 =====================
 
 def cutout(inp, out):
     from PIL import Image
@@ -41,7 +109,6 @@ def cutout(inp, out):
     rembg = _get_rembg()
     with open(inp, 'rb') as f:
         result_bytes = rembg.remove(f.read())
-    # Convert to RGB (rembg returns RGBA)
     img = Image.open(io.BytesIO(result_bytes)).convert('RGB')
     img.save(out, 'JPEG', quality=95)
     return {"success": True, "explanation": "✅ 抠图完成，已去除背景"}
@@ -49,7 +116,6 @@ def cutout(inp, out):
 
 def text_replace(inp, out, source_words, target_words):
     cv2 = _get_cv2()
-    pytesseract = _get_tesseract()
     from PIL import Image, ImageDraw, ImageFont
 
     img = cv2.imread(inp)
@@ -57,36 +123,30 @@ def text_replace(inp, out, source_words, target_words):
         return {"error": "无法读取图片"}
     h, w = img.shape[:2]
 
-    # OCR
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    pil_img = Image.fromarray(rgb)
-    data = pytesseract.image_to_data(pil_img, lang='chi_sim+eng',
-                                      output_type=pytesseract.Output.DICT)
+    try:
+        ocr_boxes = _baidu_ocr(inp)
+    except Exception as e:
+        return {"error": f"百度OCR识别失败: {str(e)}，请检查网络或API密钥配置"}
 
+    # 匹配源文字
     found_boxes = []
-    target_lower = source_words.lower() if source_words else ""
-    for i, text in enumerate(data['text']):
-        text = text.strip()
-        if not text:
-            continue
-        if target_lower:
-            if target_lower in text.lower() or text.lower() in target_lower:
-                x, y, bw, bh = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-                if bw > 5 and bh > 5:
-                    found_boxes.append((x, y, bw, bh))
-    
-    # If no exact match, try char by char
+    source_lower = source_words.lower() if source_words else ""
+    for b in ocr_boxes:
+        text = b["words"]
+        if source_lower:
+            if source_lower in text.lower() or text.lower() in source_lower:
+                found_boxes.append((b["left"], b["top"], b["width"], b["height"]))
+
+    # 逐字匹配（如果没有精确匹配到整词）
     if not found_boxes and source_words:
-        for i, text in enumerate(data['text']):
-            text = text.strip()
+        for b in ocr_boxes:
+            text = b["words"]
             for sw_char in source_words:
                 if sw_char in text:
-                    x, y, bw, bh = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-                    if bw > 5 and bh > 5:
-                        found_boxes.append((x, y, bw, bh))
+                    found_boxes.append((b["left"], b["top"], b["width"], b["height"]))
                     break
 
-    # Merge overlapping boxes
+    # 合并重叠框
     if found_boxes:
         found_boxes.sort(key=lambda b: (b[1], b[0]))
         merged = [found_boxes[0]]
@@ -102,7 +162,7 @@ def text_replace(inp, out, source_words, target_words):
                 merged.append(box)
         found_boxes = merged
 
-    # Inpaint
+    # Inpaint（擦除旧文字）
     mask = np.zeros((h, w), dtype=np.uint8)
     if found_boxes:
         for x, y, bw, bh in found_boxes:
@@ -116,7 +176,7 @@ def text_replace(inp, out, source_words, target_words):
     else:
         inpainted = img.copy()
 
-    # Draw new text
+    # 写入新文字
     result_rgb = cv2.cvtColor(inpainted, cv2.COLOR_BGR2RGB)
     result_pil = Image.fromarray(result_rgb)
     draw = ImageDraw.Draw(result_pil)
@@ -125,12 +185,11 @@ def text_replace(inp, out, source_words, target_words):
         for x, y, bw, bh in found_boxes:
             font_size = max(12, bh - 6)
             font = None
-            for fp in ['/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
-                        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
-                        '/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc',
-                        '/usr/share/fonts/noto/NotoSansSC-Regular.otf',
-                        '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
-                        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']:
+            for fp in [
+                '/usr/share/fonts/HarmonyFont/Harmony-Regular.ttf',
+                '/usr/share/fonts/SubSetSourceHanSans/SourceHanSansCN-list-label.ttf',
+                '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            ]:
                 try:
                     font = ImageFont.truetype(fp, font_size)
                     break
@@ -152,7 +211,7 @@ def text_replace(inp, out, source_words, target_words):
             draw.text((tx, ty), target_words, fill=text_color, font=font)
 
     result_pil.save(out, 'JPEG', quality=95)
-    return {"success": True, "explanation": f'✅ 改字完成："{source_words}"→"{target_words}"'}
+    return {"success": True, "explanation": f'✅ 改字完成："{source_words}"→"{target_words}" (百度OCR)'}
 
 
 def denoise(inp, out):

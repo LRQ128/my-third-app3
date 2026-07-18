@@ -2,6 +2,5 @@
 # Used by server/free_tools.py (called from Node.js Express backend)
 rembg>=1.0.0
 opencv-python-headless>=4.8.0
-pytesseract>=0.3.10
 numpy>=1.24.0
 Pillow>=10.2.0

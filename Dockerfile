@@ -1,22 +1,20 @@
 # =============================================
 # Dockerfile - 修图App (Node.js + Python双引擎)
-# 免费工具: Python (rembg/OpenCV/Tesseract)
+# 免费工具: Python (rembg/OpenCV)
+# 改字使用百度OCR API（无需Tesseract）
 # 美图工具: Node.js (meitu-cli)
 # 部署目标: Zeabur
 # =============================================
 
 FROM python:3.12-slim
 
-# Step 1: 系统基础包 + Tesseract OCR（改字功能需要）
+# Step 1: 系统基础包
 RUN set -ex \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         curl \
         ca-certificates \
         gnupg \
-        tesseract-ocr \
-        tesseract-ocr-chi-sim \
-        tesseract-ocr-chi-tra \
         libgl1 \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
@@ -45,6 +43,8 @@ COPY . .
 ENV PORT=5078
 ENV NODE_ENV=production
 ENV PYTHON_PATH=/usr/local/bin/python3
+ENV BAIDU_OCR_API_KEY=b1iRoKMpNcTjGIFs2F6hk3tw
+ENV BAIDU_OCR_SECRET_KEY=MJrwon0eoMmFaHaI0nGNGspWgx3BORUP
 
 EXPOSE 5078
 
