@@ -163,6 +163,8 @@ def text_replace(inp, out, source_words, target_words):
         found_boxes = merged
 
     # Inpaint（擦除旧文字）
+    # 关键：修复半径不能太小，否则大块文字区域中心会模糊
+    # 用 NS 方法对大区域效果更好，半径设为文字框尺寸的 30%（最大15）
     mask = np.zeros((h, w), dtype=np.uint8)
     if found_boxes:
         for x, y, bw, bh in found_boxes:
@@ -172,7 +174,10 @@ def text_replace(inp, out, source_words, target_words):
             x2 = min(w, x + bw + pad)
             y2 = min(h, y + bh + pad)
             cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
-        inpainted = cv2.inpaint(img, mask, 3, cv2.INPAINT_TELEA)
+        # 取最大文字框尺寸的20%作为半径，至少5，最大15
+        max_box_size = max(bh for _, _, _, bh in found_boxes)
+        inradius = min(max(5, int(max_box_size * 0.2)), 15)
+        inpainted = cv2.inpaint(img, mask, inradius, cv2.INPAINT_NS)
     else:
         inpainted = img.copy()
 
