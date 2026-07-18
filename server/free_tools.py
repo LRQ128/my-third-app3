@@ -191,6 +191,8 @@ def text_replace(inp, out, source_words, target_words):
             font_size = max(12, bh - 6)
             font = None
             for fp in [
+                os.path.join(os.path.dirname(__file__), '..', 'fonts', 'Harmony-Regular.ttf'),
+                os.path.join(os.path.dirname(__file__), '..', 'fonts', 'Harmony-Bold.ttf'),
                 '/usr/share/fonts/HarmonyFont/Harmony-Regular.ttf',
                 '/usr/share/fonts/SubSetSourceHanSans/SourceHanSansCN-list-label.ttf',
                 '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
@@ -207,10 +209,22 @@ def text_replace(inp, out, source_words, target_words):
             th = bbox[3] - bbox[1]
             tx = x + (bw - tw) // 2
             ty = y + (bh - th) // 2
-            sample_area = inpainted[max(0,y-5):min(h,y+bh+5), max(0,x-5):min(w,x+bw+5)]
+            # ★ 从原图（inpainted之前）取文字区域周边的平均颜色
+            # 用原图而不是修复后的图，避免inpaint模糊影响颜色判断
+            sample_pad = max(5, bh // 2)
+            x1_s = max(0, x - sample_pad)
+            y1_s = max(0, y - sample_pad)
+            x2_s = min(w, x + bw + sample_pad)
+            y2_s = min(h, y + bh + sample_pad)
+            sample_area = img[y1_s:y2_s, x1_s:x2_s]
             if sample_area.size > 0:
-                avg_color = np.mean(sample_area.reshape(-1, 3), axis=0)
-                text_color = tuple(int(255 - c) for c in avg_color)
+                avg_bgr = np.mean(sample_area.reshape(-1, 3), axis=0)
+                # 计算亮度（加权），如果背景亮就用深色字，背景暗就用浅色字
+                luminance = 0.299 * avg_bgr[2] + 0.587 * avg_bgr[1] + 0.114 * avg_bgr[0]
+                if luminance > 128:
+                    text_color = (0, 0, 0)  # 黑字（浅色背景）
+                else:
+                    text_color = (255, 255, 255)  # 白字（深色背景）
             else:
                 text_color = (0, 0, 0)
             draw.text((tx, ty), target_words, fill=text_color, font=font)
