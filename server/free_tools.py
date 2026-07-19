@@ -187,9 +187,11 @@ def text_replace(inp, out, source_words, target_words):
     draw = ImageDraw.Draw(result_pil)
 
     if target_words and found_boxes:
-        for x, y, bw, bh in found_boxes:
-            font_size = max(12, bh - 6)
-            font = None
+        # 预加载字体（缓存复用，避免每个box都重新加载）
+        _font_cache = {}
+        def _get_font(size):
+            if size in _font_cache:
+                return _font_cache[size]
             for fp in [
                 os.path.join(os.path.dirname(__file__), '..', 'fonts', 'Harmony-Regular.ttf'),
                 os.path.join(os.path.dirname(__file__), '..', 'fonts', 'Harmony-Bold.ttf'),
@@ -198,35 +200,82 @@ def text_replace(inp, out, source_words, target_words):
                 '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
             ]:
                 try:
-                    font = ImageFont.truetype(fp, font_size)
-                    break
+                    f = ImageFont.truetype(fp, size)
+                    _font_cache[size] = f
+                    return f
                 except:
                     continue
-            if font is None:
-                font = ImageFont.load_default()
+            _font_cache[size] = ImageFont.load_default()
+            return _font_cache[size]
+
+        for x, y, bw, bh in found_boxes:
+            # 采样区域：从原图（inpaint前）取文字周边区域的平均颜色和纹理特征
+            sample_pad = max(10, bh // 2)
+            # ── ① 自适应字体大小 ──
+            # 先用高度估算初始字号，再检查宽度是否符合，逐步缩小
+            font_size = max(12, bh - 4)
+            font = _get_font(font_size)
             bbox = draw.textbbox((0, 0), target_words, font=font)
             tw = bbox[2] - bbox[0]
             th = bbox[3] - bbox[1]
-            tx = x + (bw - tw) // 2
-            ty = y + (bh - th) // 2
-            # ★ 从原图（inpainted之前）取文字区域周边的平均颜色
-            # 用原图而不是修复后的图，避免inpaint模糊影响颜色判断
-            sample_pad = max(5, bh // 2)
+            while tw > bw * 0.88 and font_size > 10:
+                font_size -= 2
+                font = _get_font(font_size)
+                bbox = draw.textbbox((0, 0), target_words, font=font)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+
+            # ── ② 更精准的文字颜色判断 ──
+            # 从原图（inpainted之前）取文字区域周边的平均颜色和纹理
             x1_s = max(0, x - sample_pad)
             y1_s = max(0, y - sample_pad)
             x2_s = min(w, x + bw + sample_pad)
             y2_s = min(h, y + bh + sample_pad)
             sample_area = img[y1_s:y2_s, x1_s:x2_s]
+
             if sample_area.size > 0:
-                avg_bgr = np.mean(sample_area.reshape(-1, 3), axis=0)
-                # 计算亮度（加权），如果背景亮就用深色字，背景暗就用浅色字
+                pixels = sample_area.reshape(-1, 3)
+                avg_bgr = np.mean(pixels, axis=0)
+                std_bgr = np.std(pixels, axis=0)
                 luminance = 0.299 * avg_bgr[2] + 0.587 * avg_bgr[1] + 0.114 * avg_bgr[0]
-                if luminance > 128:
-                    text_color = (0, 0, 0)  # 黑字（浅色背景）
+                bg_variation = np.mean(std_bgr)  # 纹理复杂度
+
+                if luminance > 160:
+                    # 很亮的背景 → 黑字 + 浅灰阴影
+                    text_color = (0, 0, 0)
+                    shadow_color = (180, 180, 180)
+                elif luminance < 80:
+                    # 很暗的背景 → 白字 + 深灰阴影
+                    text_color = (255, 255, 255)
+                    shadow_color = (10, 10, 10)
                 else:
-                    text_color = (255, 255, 255)  # 白字（深色背景）
+                    # 中间亮度 → 取反差最大的颜色
+                    if luminance > 128:
+                        text_color = (0, 0, 0)
+                        shadow_color = (180, 180, 180)
+                    else:
+                        text_color = (255, 255, 255)
+                        shadow_color = (30, 30, 30)
+                # 纹理复杂 → 增强对比度确保可读性
+                if bg_variation > 35:
+                    if luminance > 128:
+                        text_color = (0, 0, 0)
+                        shadow_color = (160, 160, 160)
+                    else:
+                        text_color = (255, 255, 255)
+                        shadow_color = (0, 0, 0)
             else:
                 text_color = (0, 0, 0)
+                shadow_color = (180, 180, 180)
+
+            # ── ③ 阴影效果 + 正文绘制 ──
+            tx = x + (bw - tw) // 2
+            ty = y + (bh - th) // 2
+            sh_off = max(2, int(font_size * 0.07))  # 阴影偏移量
+
+            # 先画阴影（右下偏移）
+            draw.text((tx + sh_off, ty + sh_off), target_words, fill=shadow_color, font=font)
+            # 再画正文（覆盖在阴影之上）
             draw.text((tx, ty), target_words, fill=text_color, font=font)
 
     result_pil.save(out, 'JPEG', quality=95)
