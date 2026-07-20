@@ -128,29 +128,68 @@ def text_replace(inp, out, source_words, target_words):
     except Exception as e:
         return {"error": f"百度OCR识别失败: {str(e)}，请检查网络或API密钥配置"}
 
-    # 匹配源文字
-    found_boxes = []
+    # ── 1. 匹配源文字 ──
+    # 记录每个匹配框的原文长度，用于精确擦除
     source_lower = source_words.lower() if source_words else ""
+
+    # 存储：(box_x, box_y, box_w, box_h, ocr_text, is_exact_match)
+    match_info = []
     for b in ocr_boxes:
         text = b["words"]
         if source_lower:
             if source_lower in text.lower() or text.lower() in source_lower:
-                found_boxes.append((b["left"], b["top"], b["width"], b["height"]))
+                match_info.append((b["left"], b["top"], b["width"], b["height"], text, True))
 
-    # 逐字匹配（如果没有精确匹配到整词）
-    if not found_boxes and source_words:
+    # 逐字匹配兜底
+    if not match_info and source_words:
         for b in ocr_boxes:
             text = b["words"]
             for sw_char in source_words:
                 if sw_char in text:
-                    found_boxes.append((b["left"], b["top"], b["width"], b["height"]))
+                    match_info.append((b["left"], b["top"], b["width"], b["height"], text, False))
                     break
 
-    # 合并重叠框
-    if found_boxes:
-        found_boxes.sort(key=lambda b: (b[1], b[0]))
-        merged = [found_boxes[0]]
-        for box in found_boxes[1:]:
+    # ── 2. 智能分块：如果OCR框包含多余字符，只擦除目标部分 ──
+    # 比如 OCR 检测到 "贺泽鲜肉"，但只改 "贺泽" → 保留 "鲜肉"
+    erase_boxes = []  # 实际要擦除的 (x, y, w, h)
+    write_boxes = []  # 实际要写字的 (x, y, w, h, 背景采样区域)
+
+    for x, y, bw, bh, ocr_text, is_exact in match_info:
+        ocr_len = len(ocr_text)
+        src_len = len(source_words)
+
+        if is_exact and ocr_len > src_len and src_len > 0:
+            # source_words 是 ocr_text 的子串 → 只在对应位置擦除和写入
+            # 按字符宽度比例分割
+            char_ratio = src_len / max(ocr_len, 1)
+            # 找到 source 在 text 中的位置
+            src_idx = ocr_text.lower().find(source_lower)
+            if src_idx < 0:
+                src_idx = 0
+            # 起始偏移 = 总宽 * (source起始位置 / 总字符数)
+            offset_ratio = src_idx / max(ocr_len, 1)
+            seg_w = bw * char_ratio
+            seg_x = x + int(bw * offset_ratio)
+            # 微调：左右各加一点padding
+            seg_pad_x = int(seg_w * 0.05)
+            # 擦除区域（只擦除目标文字部分）
+            ex1 = max(0, seg_x - seg_pad_x)
+            ey1 = max(0, y - 2)
+            ex2 = min(w, seg_x + int(seg_w) + seg_pad_x)
+            ey2 = min(h, y + bh + 2)
+            erase_boxes.append((ex1, ey1, ex2 - ex1, ey2 - ey1))
+            # 写入区域（与擦除区域一致，但用于居中写新字）
+            write_boxes.append((seg_x, y, int(seg_w), bh, x, y, bw, bh))
+        else:
+            # 完全匹配或模糊匹配 → 整块擦除
+            erase_boxes.append((x, y, bw, bh))
+            write_boxes.append((x, y, bw, bh, x, y, bw, bh))
+
+    # 合并重叠擦除框
+    if erase_boxes:
+        erase_boxes.sort(key=lambda b: (b[1], b[0]))
+        merged = [erase_boxes[0]]
+        for box in erase_boxes[1:]:
             last = merged[-1]
             if abs(box[1] - last[1]) < 20 and box[0] - (last[0] + last[2]) < 30:
                 nx = min(last[0], box[0])
@@ -160,44 +199,75 @@ def text_replace(inp, out, source_words, target_words):
                 merged[-1] = (nx, ny, nw, nh)
             else:
                 merged.append(box)
-        found_boxes = merged
+        erase_boxes = merged
 
-    # Inpaint（擦除旧文字）
-    # 关键：修复半径不能太小，否则大块文字区域中心会模糊
-    # 用 NS 方法对大区域效果更好，半径设为文字框尺寸的 30%（最大15）
+    # ── 3. 采集纯背景颜色（从文字框周边角落，不含文字本身）──
+    bg_samples = []  # [(B, G, R), ...] 纯背景采样
+    if erase_boxes:
+        for x, y, bw, bh in erase_boxes:
+            # 从文字框四个角落外沿采样（避开文字区域）
+            corners = [
+                (x - 10, y - 10, 10, 10),
+                (x + bw - 10, y - 10, 10, 10),
+                (x - 10, y + bh - 10, 10, 10),
+                (x + bw - 10, y + bh - 10, 10, 10),
+            ]
+            for cx, cy, cw, ch in corners:
+                if cx >= 0 and cy >= 0 and cx + cw <= w and cy + ch <= h:
+                    area = img[cy:cy + ch, cx:cx + cw]
+                    if area.size > 0:
+                        avg = np.mean(area.reshape(-1, 3), axis=0)
+                        bg_samples.append(avg)
+        # 如果角落采样不够，扩大范围
+        if len(bg_samples) < 2:
+            for x, y, bw, bh in erase_boxes:
+                pad = max(bh, 20)
+                x1_s = max(0, x - pad)
+                y1_s = max(0, y - pad)
+                x2_s = min(w, x + bw + pad)
+                y2_s = min(h, y + bh + pad)
+                area = img[y1_s:y2_s, x1_s:x2_s]
+                if area.size > 0:
+                    avg = np.mean(area.reshape(-1, 3), axis=0)
+                    bg_samples.append(avg)
+
+    # ── 4. 擦除旧文字（inpaint）──
     mask = np.zeros((h, w), dtype=np.uint8)
-    if found_boxes:
-        for x, y, bw, bh in found_boxes:
-            pad = max(4, int(min(bw, bh) * 0.15))
+    if erase_boxes:
+        for x, y, bw, bh in erase_boxes:
+            pad = max(6, int(min(bw, bh) * 0.2))
             x1 = max(0, x - pad)
             y1 = max(0, y - pad)
             x2 = min(w, x + bw + pad)
             y2 = min(h, y + bh + pad)
             cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
-        # 取最大文字框尺寸的20%作为半径，至少5，最大15
-        max_box_size = max(bh for _, _, _, bh in found_boxes)
-        inradius = min(max(5, int(max_box_size * 0.2)), 15)
-        inpainted = cv2.inpaint(img, mask, inradius, cv2.INPAINT_NS)
+        max_box_size = max(bh for _, _, _, _ in erase_boxes)
+        inradius = min(max(5, int(max_box_size * 0.22)), 12)
+        inpainted = cv2.inpaint(img, mask, inradius, cv2.INPAINT_TELEA)
     else:
         inpainted = img.copy()
 
-    # 写入新文字
+    # ── 5. 写入新文字 ──
     result_rgb = cv2.cvtColor(inpainted, cv2.COLOR_BGR2RGB)
     result_pil = Image.fromarray(result_rgb)
     draw = ImageDraw.Draw(result_pil)
 
-    if target_words and found_boxes:
-        # 预加载字体（缓存复用，避免每个box都重新加载）
+    if target_words and write_boxes:
+        # 预加载字体缓存
         _font_cache = {}
+
         def _get_font(size):
             if size in _font_cache:
                 return _font_cache[size]
+            # 粗体优先！匹配招牌字体风格
             for fp in [
-                os.path.join(os.path.dirname(__file__), '..', 'fonts', 'Harmony-Regular.ttf'),
+                '/usr/share/fonts/HarmonyFont/Harmony-Bold.ttf',
                 os.path.join(os.path.dirname(__file__), '..', 'fonts', 'Harmony-Bold.ttf'),
+                '/usr/share/fonts/HarmonyFont/Harmony-SemiBold.ttf',
+                '/usr/share/fonts/HarmonyFont/Harmony-Medium.ttf',
                 '/usr/share/fonts/HarmonyFont/Harmony-Regular.ttf',
+                os.path.join(os.path.dirname(__file__), '..', 'fonts', 'Harmony-Regular.ttf'),
                 '/usr/share/fonts/SubSetSourceHanSans/SourceHanSansCN-list-label.ttf',
-                '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
             ]:
                 try:
                     f = ImageFont.truetype(fp, size)
@@ -208,74 +278,60 @@ def text_replace(inp, out, source_words, target_words):
             _font_cache[size] = ImageFont.load_default()
             return _font_cache[size]
 
-        for x, y, bw, bh in found_boxes:
-            # 采样区域：从原图（inpaint前）取文字周边区域的平均颜色和纹理特征
-            sample_pad = max(10, bh // 2)
-            # ── ① 自适应字体大小 ──
-            # 先用高度估算初始字号，再检查宽度是否符合，逐步缩小
-            font_size = max(12, bh - 4)
+        # 分析全局背景色
+        global_bg = np.array([128, 128, 128])
+        if bg_samples:
+            global_bg = np.mean(bg_samples, axis=0)
+        bg_lum = 0.299 * global_bg[2] + 0.587 * global_bg[1] + 0.114 * global_bg[0]
+        # 红底判断 (红色通道 > 绿色和蓝色的1.4倍)
+        is_red_bg = global_bg[2] > global_bg[1] * 1.4 and global_bg[2] > global_bg[0] * 1.4
+
+        for box in write_boxes:
+            # write_x, write_y, write_w, write_h = 实际写字区域
+            # orig_x, orig_y, orig_bw, orig_bh = 原始OCR完整框（用于参考整体布局）
+            write_x, write_y, write_w, write_h, orig_x, orig_y, orig_bw, orig_bh = box
+
+            # ── 5a. 确定文字颜色 ──
+            if is_red_bg:
+                # 红底 → 白字（经典招牌配色）
+                text_color = (255, 255, 255)
+                shadow_color = (30, 30, 30)
+            elif bg_lum > 150:
+                text_color = (0, 0, 0)
+                shadow_color = (180, 180, 180)
+            elif bg_lum < 70:
+                text_color = (255, 255, 255)
+                shadow_color = (20, 20, 20)
+            else:
+                text_color = (255, 255, 255) if bg_lum < 128 else (0, 0, 0)
+                shadow_color = (30, 30, 30) if bg_lum < 128 else (180, 180, 180)
+
+            # ── 5b. 自适应字体大小 ──
+            # 先用原始框高度估算，再检查宽高比
+            font_size = max(14, write_h - 2)
             font = _get_font(font_size)
             bbox = draw.textbbox((0, 0), target_words, font=font)
             tw = bbox[2] - bbox[0]
             th = bbox[3] - bbox[1]
-            while tw > bw * 0.88 and font_size > 10:
-                font_size -= 2
+
+            # 宽高都要适配
+            w_ratio = write_w * 0.90 / max(tw, 1)
+            h_ratio = write_h * 0.85 / max(th, 1)
+            ratio = min(w_ratio, h_ratio, 1.0)
+            if ratio < 0.95:
+                font_size = max(10, int(font_size * ratio))
                 font = _get_font(font_size)
                 bbox = draw.textbbox((0, 0), target_words, font=font)
                 tw = bbox[2] - bbox[0]
                 th = bbox[3] - bbox[1]
 
-            # ── ② 更精准的文字颜色判断 ──
-            # 从原图（inpainted之前）取文字区域周边的平均颜色和纹理
-            x1_s = max(0, x - sample_pad)
-            y1_s = max(0, y - sample_pad)
-            x2_s = min(w, x + bw + sample_pad)
-            y2_s = min(h, y + bh + sample_pad)
-            sample_area = img[y1_s:y2_s, x1_s:x2_s]
+            # ── 5c. 居中 ──
+            tx = write_x + (write_w - tw) // 2
+            ty = write_y + (write_h - th) // 2
+            sh_off = max(2, min(4, int(font_size * 0.07)))
 
-            if sample_area.size > 0:
-                pixels = sample_area.reshape(-1, 3)
-                avg_bgr = np.mean(pixels, axis=0)
-                std_bgr = np.std(pixels, axis=0)
-                luminance = 0.299 * avg_bgr[2] + 0.587 * avg_bgr[1] + 0.114 * avg_bgr[0]
-                bg_variation = np.mean(std_bgr)  # 纹理复杂度
-
-                if luminance > 160:
-                    # 很亮的背景 → 黑字 + 浅灰阴影
-                    text_color = (0, 0, 0)
-                    shadow_color = (180, 180, 180)
-                elif luminance < 80:
-                    # 很暗的背景 → 白字 + 深灰阴影
-                    text_color = (255, 255, 255)
-                    shadow_color = (10, 10, 10)
-                else:
-                    # 中间亮度 → 取反差最大的颜色
-                    if luminance > 128:
-                        text_color = (0, 0, 0)
-                        shadow_color = (180, 180, 180)
-                    else:
-                        text_color = (255, 255, 255)
-                        shadow_color = (30, 30, 30)
-                # 纹理复杂 → 增强对比度确保可读性
-                if bg_variation > 35:
-                    if luminance > 128:
-                        text_color = (0, 0, 0)
-                        shadow_color = (160, 160, 160)
-                    else:
-                        text_color = (255, 255, 255)
-                        shadow_color = (0, 0, 0)
-            else:
-                text_color = (0, 0, 0)
-                shadow_color = (180, 180, 180)
-
-            # ── ③ 阴影效果 + 正文绘制 ──
-            tx = x + (bw - tw) // 2
-            ty = y + (bh - th) // 2
-            sh_off = max(2, int(font_size * 0.07))  # 阴影偏移量
-
-            # 先画阴影（右下偏移）
+            # ── 5d. 阴影 + 正文 ──
             draw.text((tx + sh_off, ty + sh_off), target_words, fill=shadow_color, font=font)
-            # 再画正文（覆盖在阴影之上）
             draw.text((tx, ty), target_words, fill=text_color, font=font)
 
     result_pil.save(out, 'JPEG', quality=95)

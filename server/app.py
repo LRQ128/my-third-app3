@@ -72,38 +72,37 @@ def free_cutout(image_path: str, output_path: str) -> dict:
 
 
 def free_text_replace(image_path: str, source_words: str, target_words: str, output_path: str) -> dict:
-    """改字 - OCR识别位置→inpaint擦除→Pillow写入新字"""
+    """改字 - OCR识别位置→inpaint擦除→Pillow写入新字（优化版）"""
     cv2 = _import_cv2()
     pytesseract = _import_tesseract()
-    
+
     img_cv = cv2.imread(image_path)
     if img_cv is None:
         return {"error": "无法读取图片"}
-    
+
     h, w = img_cv.shape[:2]
-    
+
     # 1. OCR识别所有文字位置
     rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
     pil_img = Image.fromarray(rgb)
-    
-    # Try to find the target text
     data = pytesseract.image_to_data(pil_img, lang='chi_sim+eng', output_type=pytesseract.Output.DICT)
-    
-    found_boxes = []
+
+    # ── 1a. 匹配源文字，同时记录OCR完整文本用于智能分块 ──
+    # 存储：(x, y, w, h, ocr_text)
+    raw_matches = []
     target_lower = source_words.lower() if source_words else ""
-    
+
     for i, text in enumerate(data['text']):
         text = text.strip()
         if not text:
             continue
-        # Match if source_words is contained in recognized text or vice versa
         if target_lower and (target_lower in text.lower() or text.lower() in target_lower):
             x, y, bw, bh = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
             if bw > 5 and bh > 5:
-                found_boxes.append((x, y, bw, bh))
-    
-    # If no exact match, find all text boxes that contain any of source_words
-    if not found_boxes and source_words:
+                raw_matches.append((x, y, bw, bh, text))
+
+    # 逐字匹配兜底
+    if not raw_matches and source_words:
         for i, text in enumerate(data['text']):
             text = text.strip()
             if not text:
@@ -112,26 +111,44 @@ def free_text_replace(image_path: str, source_words: str, target_words: str, out
                 if sw_char in text:
                     x, y, bw, bh = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
                     if bw > 5 and bh > 5:
-                        found_boxes.append((x, y, bw, bh))
+                        raw_matches.append((x, y, bw, bh, text))
                     break
-    
-    # If still no match, find ALL text boxes (user wants to replace all text)
-    if not found_boxes and source_words:
-        # Fallback: find boxes for the specific source words by scanning
-        for i, text in enumerate(data['text']):
-            text = text.strip()
-            if source_words in text:
-                x, y, bw, bh = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-                if bw > 5 and bh > 5:
-                    found_boxes.append((x, y, bw, bh))
-    
-    # Merge overlapping boxes
-    if found_boxes:
-        found_boxes.sort(key=lambda b: (b[1], b[0]))  # sort by y then x
-        merged = [found_boxes[0]]
-        for box in found_boxes[1:]:
+
+    # ── 1b. 智能分块 ──
+    # 如果OCR检测到"贺泽鲜肉"但只要改"贺泽"，只擦除子串区域
+    erase_boxes = []
+    write_boxes = []
+    src_len = len(source_words)
+
+    for x, y, bw, bh, ocr_text in raw_matches:
+        ocr_len = len(ocr_text)
+        if ocr_len > src_len > 0 and source_words.lower() in ocr_text.lower():
+            src_idx = ocr_text.lower().find(source_words.lower())
+            if src_idx >= 0:
+                char_ratio = src_len / max(ocr_len, 1)
+                offset_ratio = src_idx / max(ocr_len, 1)
+                seg_w = bw * char_ratio
+                seg_x = x + int(bw * offset_ratio)
+                seg_pad = int(seg_w * 0.05)
+                ex1 = max(0, seg_x - seg_pad)
+                ey1 = max(0, y - 2)
+                ex2 = min(w, seg_x + int(seg_w) + seg_pad)
+                ey2 = min(h, y + bh + 2)
+                erase_boxes.append((ex1, ey1, ex2 - ex1, ey2 - ey1))
+                write_boxes.append((seg_x, y, int(seg_w), bh, x, y, bw, bh))
+            else:
+                erase_boxes.append((x, y, bw, bh))
+                write_boxes.append((x, y, bw, bh, x, y, bw, bh))
+        else:
+            erase_boxes.append((x, y, bw, bh))
+            write_boxes.append((x, y, bw, bh, x, y, bw, bh))
+
+    # 合并重叠擦除框
+    if erase_boxes:
+        erase_boxes.sort(key=lambda b: (b[1], b[0]))
+        merged = [erase_boxes[0]]
+        for box in erase_boxes[1:]:
             last = merged[-1]
-            # If close vertically and horizontally, merge
             if abs(box[1] - last[1]) < 20 and box[0] - (last[0] + last[2]) < 30:
                 nx = min(last[0], box[0])
                 ny = min(last[1], box[1])
@@ -140,72 +157,125 @@ def free_text_replace(image_path: str, source_words: str, target_words: str, out
                 merged[-1] = (nx, ny, nw, nh)
             else:
                 merged.append(box)
-        found_boxes = merged
-    
-    # 2. Inpaint to remove original text
+        erase_boxes = merged
+
+    # ── 2. 采集纯背景颜色 ──
+    bg_samples = []
+    if erase_boxes:
+        for x, y, bw, bh in erase_boxes:
+            for dx, dy in [(-10, -10), (bw + 5, -10), (-10, bh + 5), (bw + 5, bh + 5)]:
+                cx = x + dx
+                cy = y + dy
+                if cx >= 0 and cy >= 0 and cx + 10 <= w and cy + 10 <= h:
+                    area = img_cv[cy:cy + 10, cx:cx + 10]
+                    if area.size > 0:
+                        bg_samples.append(np.mean(area.reshape(-1, 3), axis=0))
+            if len(bg_samples) < 2:
+                pad = max(bh, 20)
+                x1_s = max(0, x - pad)
+                y1_s = max(0, y - pad)
+                x2_s = min(w, x + bw + pad)
+                y2_s = min(h, y + bh + pad)
+                area = img_cv[y1_s:y2_s, x1_s:x2_s]
+                if area.size > 0:
+                    bg_samples.append(np.mean(area.reshape(-1, 3), axis=0))
+
+    # ── 3. Inpaint擦除 ──
     mask = np.zeros((h, w), dtype=np.uint8)
-    if found_boxes:
-        for x, y, bw, bh in found_boxes:
-            # Expand slightly for cleaner removal
-            pad = max(4, int(min(bw, bh) * 0.15))
+    if erase_boxes:
+        for x, y, bw, bh in erase_boxes:
+            pad = max(6, int(min(bw, bh) * 0.2))
             x1 = max(0, x - pad)
             y1 = max(0, y - pad)
             x2 = min(w, x + bw + pad)
             y2 = min(h, y + bh + pad)
             cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
-        
-        inpainted = cv2.inpaint(img_cv, mask, 3, cv2.INPAINT_TELEA)
+        max_box_size = max(bh for _, _, _, _ in erase_boxes) if erase_boxes else 20
+        inradius = min(max(5, int(max_box_size * 0.22)), 12)
+        inpainted = cv2.inpaint(img_cv, mask, inradius, cv2.INPAINT_TELEA)
     else:
         inpainted = img_cv.copy()
-    
-    # 3. Draw new text
+
+    # ── 4. 分析全局背景 ──
+    global_bg = np.array([128, 128, 128])
+    if bg_samples:
+        global_bg = np.mean(bg_samples, axis=0)
+    bg_lum = 0.299 * global_bg[2] + 0.587 * global_bg[1] + 0.114 * global_bg[0]
+    is_red_bg = global_bg[2] > global_bg[1] * 1.4 and global_bg[2] > global_bg[0] * 1.4
+
+    # ── 5. 写入新文字 ──
     result_rgb = cv2.cvtColor(inpainted, cv2.COLOR_BGR2RGB)
     result_pil = Image.fromarray(result_rgb)
     draw = ImageDraw.Draw(result_pil)
-    
-    if target_words and found_boxes:
-        for x, y, bw, bh in found_boxes:
-            # Pick font size based on box height
-            font_size = max(12, bh - 6)
-            # Try to use a Chinese font
-            font = None
-            for fp in ['/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
-                        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
-                        '/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc',
-                        '/usr/share/fonts/noto/NotoSansSC-Regular.otf',
-                        '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
-                        '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
-                        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']:
+
+    if target_words and write_boxes:
+        _font_cache = {}
+
+        def _get_font(size):
+            if size in _font_cache:
+                return _font_cache[size]
+            for fp in [
+                '/usr/share/fonts/HarmonyFont/Harmony-Bold.ttf',
+                '/usr/share/fonts/HarmonyFont/Harmony-SemiBold.ttf',
+                '/usr/share/fonts/HarmonyFont/Harmony-Medium.ttf',
+                '/usr/share/fonts/HarmonyFont/Harmony-Regular.ttf',
+                '/usr/share/fonts/SubSetSourceHanSans/SourceHanSansCN-list-label.ttf',
+            ]:
                 try:
-                    font = ImageFont.truetype(fp, font_size)
-                    break
+                    f = ImageFont.truetype(fp, size)
+                    _font_cache[size] = f
+                    return f
                 except:
                     continue
-            if font is None:
-                font = ImageFont.load_default()
-            
-            # Get text size
+            _font_cache[size] = ImageFont.load_default()
+            return _font_cache[size]
+
+        for box in write_boxes:
+            write_x, write_y, write_w, write_h = box[0], box[1], box[2], box[3]
+            orig_x, orig_y, orig_bw, orig_bh = box[4], box[5], box[6], box[7]
+
+            # 文字颜色
+            if is_red_bg:
+                text_color = (255, 255, 255)
+                shadow_color = (30, 30, 30)
+            elif bg_lum > 150:
+                text_color = (0, 0, 0)
+                shadow_color = (180, 180, 180)
+            elif bg_lum < 70:
+                text_color = (255, 255, 255)
+                shadow_color = (20, 20, 20)
+            else:
+                text_color = (255, 255, 255) if bg_lum < 128 else (0, 0, 0)
+                shadow_color = (30, 30, 30) if bg_lum < 128 else (180, 180, 180)
+
+            # 自适应字体
+            font_size = max(14, write_h - 2)
+            font = _get_font(font_size)
             bbox = draw.textbbox((0, 0), target_words, font=font)
             tw = bbox[2] - bbox[0]
             th = bbox[3] - bbox[1]
-            
-            # Center in the box
-            tx = x + (bw - tw) // 2
-            ty = y + (bh - th) // 2
-            
-            # Get dominant color from surrounding area for text color
-            sample_area = inpainted[max(0,y-5):min(h,y+bh+5), max(0,x-5):min(w,x+bw+5)]
-            if sample_area.size > 0:
-                avg_color = np.mean(sample_area.reshape(-1, 3), axis=0)
-                # Use opposite color for visibility
-                text_color = tuple(int(255 - c) for c in avg_color)
-            else:
-                text_color = (0, 0, 0)
-            
+
+            w_ratio = write_w * 0.90 / max(tw, 1)
+            h_ratio = write_h * 0.85 / max(th, 1)
+            ratio = min(w_ratio, h_ratio, 1.0)
+            if ratio < 0.95:
+                font_size = max(10, int(font_size * ratio))
+                font = _get_font(font_size)
+                bbox = draw.textbbox((0, 0), target_words, font=font)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+
+            # 居中
+            tx = write_x + (write_w - tw) // 2
+            ty = write_y + (write_h - th) // 2
+            sh_off = max(2, min(4, int(font_size * 0.07)))
+
+            # 阴影 + 正文
+            draw.text((tx + sh_off, ty + sh_off), target_words, fill=shadow_color, font=font)
             draw.text((tx, ty), target_words, fill=text_color, font=font)
-    
+
     result_pil.save(output_path)
-    explanation = f'✅ 免费版改字完成'
+    explanation = '✅ 免费版改字完成'
     if source_words and target_words:
         explanation += f'："{source_words}" → "{target_words}"'
     return {"success": True, "explanation": explanation}
