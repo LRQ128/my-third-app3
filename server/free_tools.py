@@ -231,23 +231,26 @@ def text_replace(inp, out, source_words, target_words):
                     avg = np.mean(area.reshape(-1, 3), axis=0)
                     bg_samples.append(avg)
 
-    # ── 4. 擦除旧文字（inpaint）──
+    # ── 4. 擦除旧文字（改进版：双遍 inpaint + 自适应半径）──
     mask = np.zeros((h, w), dtype=np.uint8)
     if erase_boxes:
         for x, y, bw, bh in erase_boxes:
-            pad = max(6, int(min(bw, bh) * 0.2))
+            pad = max(8, int(min(bw, bh) * 0.25))
             x1 = max(0, x - pad)
             y1 = max(0, y - pad)
             x2 = min(w, x + bw + pad)
             y2 = min(h, y + bh + pad)
             cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
         max_box_size = max(bh for _, _, _, _ in erase_boxes)
-        inradius = min(max(5, int(max_box_size * 0.22)), 12)
-        inpainted = cv2.inpaint(img, mask, inradius, cv2.INPAINT_TELEA)
+        # 大区域用大半径多遍修复
+        base_radius = min(max(3, int(max_box_size * 0.15)), 20)
+        inpainted = img.copy()
+        for _ in range(2):  # 双遍修复，减少模糊
+            inpainted = cv2.inpaint(inpainted, mask, base_radius, cv2.INPAINT_NS)
     else:
         inpainted = img.copy()
 
-    # ── 5. 写入新文字 ──
+    # ── 5. 写入新文字（改进版：描边 + 纹理匹配 + 噪点融合）──
     result_rgb = cv2.cvtColor(inpainted, cv2.COLOR_BGR2RGB)
     result_pil = Image.fromarray(result_rgb)
     draw = ImageDraw.Draw(result_pil)
@@ -259,7 +262,6 @@ def text_replace(inp, out, source_words, target_words):
         def _get_font(size):
             if size in _font_cache:
                 return _font_cache[size]
-            # 粗体优先！匹配招牌字体风格
             for fp in [
                 '/usr/share/fonts/HarmonyFont/Harmony-Bold.ttf',
                 os.path.join(os.path.dirname(__file__), '..', 'fonts', 'Harmony-Bold.ttf'),
@@ -283,45 +285,72 @@ def text_replace(inp, out, source_words, target_words):
         if bg_samples:
             global_bg = np.mean(bg_samples, axis=0)
         bg_lum = 0.299 * global_bg[2] + 0.587 * global_bg[1] + 0.114 * global_bg[0]
-        # 红底判断 (红色通道 > 绿色和蓝色的1.4倍)
+        # 红底判断
         is_red_bg = global_bg[2] > global_bg[1] * 1.4 and global_bg[2] > global_bg[0] * 1.4
+        # 采样周边纹理/噪点强度（用于后续融合）
+        texture_areas = []
+        if bg_samples:
+            for bx, by, bw, bh in erase_boxes:
+                pad = max(10, bh)
+                x1_s = max(0, bx - pad)
+                y1_s = max(0, by - pad)
+                x2_s = min(w, bx + bw + pad)
+                y2_s = min(h, by + bh + pad)
+                area = img[y1_s:y2_s, x1_s:x2_s]
+                if area.size > 0:
+                    gray = cv2.cvtColor(area, cv2.COLOR_BGR2GRAY)
+                    texture_areas.append(gray)
+        # 全局噪声水平
+        global_noise_std = 8.0
+        if texture_areas:
+            noise_stds = [np.std(a) for a in texture_areas if a.size > 0]
+            if noise_stds:
+                global_noise_std = np.mean(noise_stds)
+
+        # 新建一个透明图层用于文字渲染（先渲染，再融合到背景）
+        text_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        text_draw = ImageDraw.Draw(text_layer)
 
         for box in write_boxes:
-            # write_x, write_y, write_w, write_h = 实际写字区域
-            # orig_x, orig_y, orig_bw, orig_bh = 原始OCR完整框（用于参考整体布局）
-            write_x, write_y, write_w, write_h, orig_x, orig_y, orig_bw, orig_bh = box
+            write_x, write_y, write_w, write_h = box[0], box[1], box[2], box[3]
 
-            # ── 5a. 确定文字颜色 ──
+            # ── 5a. 确定文字颜色（带透明度通道）──
             if is_red_bg:
-                # 红底 → 白字（经典招牌配色）
-                text_color = (255, 255, 255)
-                shadow_color = (30, 30, 30)
+                text_color = (255, 255, 255, 235)
+                stroke_color = (80, 20, 20, 120)  # 暗红描边
+                shadow_color = (20, 10, 10, 100)
             elif bg_lum > 150:
-                text_color = (0, 0, 0)
-                shadow_color = (180, 180, 180)
+                text_color = (0, 0, 0, 235)
+                stroke_color = (180, 180, 180, 80)
+                shadow_color = (200, 200, 200, 80)
             elif bg_lum < 70:
-                text_color = (255, 255, 255)
-                shadow_color = (20, 20, 20)
+                text_color = (255, 255, 255, 235)
+                stroke_color = (30, 30, 30, 100)
+                shadow_color = (10, 10, 10, 100)
             else:
-                text_color = (255, 255, 255) if bg_lum < 128 else (0, 0, 0)
-                shadow_color = (30, 30, 30) if bg_lum < 128 else (180, 180, 180)
+                if bg_lum < 128:
+                    text_color = (255, 255, 255, 235)
+                    stroke_color = (50, 50, 50, 80)
+                    shadow_color = (10, 10, 10, 100)
+                else:
+                    text_color = (0, 0, 0, 235)
+                    stroke_color = (180, 180, 180, 80)
+                    shadow_color = (200, 200, 200, 80)
 
-            # ── 5b. 自适应字体大小 ──
-            # 先用原始框高度估算，再检查宽高比
+            # ── 5b. 自适应字体大小（宽度+高度双维度）──
             font_size = max(14, write_h - 2)
             font = _get_font(font_size)
-            bbox = draw.textbbox((0, 0), target_words, font=font)
+            bbox = text_draw.textbbox((0, 0), target_words, font=font)
             tw = bbox[2] - bbox[0]
             th = bbox[3] - bbox[1]
 
-            # 宽高都要适配
-            w_ratio = write_w * 0.90 / max(tw, 1)
-            h_ratio = write_h * 0.85 / max(th, 1)
+            w_ratio = write_w * 0.88 / max(tw, 1)
+            h_ratio = write_h * 0.82 / max(th, 1)
             ratio = min(w_ratio, h_ratio, 1.0)
             if ratio < 0.95:
                 font_size = max(10, int(font_size * ratio))
                 font = _get_font(font_size)
-                bbox = draw.textbbox((0, 0), target_words, font=font)
+                bbox = text_draw.textbbox((0, 0), target_words, font=font)
                 tw = bbox[2] - bbox[0]
                 th = bbox[3] - bbox[1]
 
@@ -329,12 +358,47 @@ def text_replace(inp, out, source_words, target_words):
             tx = write_x + (write_w - tw) // 2
             ty = write_y + (write_h - th) // 2
             sh_off = max(2, min(4, int(font_size * 0.07)))
+            stroke_w = max(1, int(font_size * 0.06))
 
-            # ── 5d. 阴影 + 正文 ──
-            draw.text((tx + sh_off, ty + sh_off), target_words, fill=shadow_color, font=font)
-            draw.text((tx, ty), target_words, fill=text_color, font=font)
+            # ── 5d. 三层绘制：描边 → 阴影 → 正文 ──
+            # 描边（模拟立体字的边缘）
+            for sx in range(-stroke_w, stroke_w + 1):
+                for sy in range(-stroke_w, stroke_w + 1):
+                    if sx != 0 or sy != 0:
+                        stroke_alpha = 60 if abs(sx) + abs(sy) < stroke_w * 1.5 else 30
+                        sc = (stroke_color[0], stroke_color[1], stroke_color[2], stroke_alpha)
+                        text_draw.text((tx + sx, ty + sy), target_words, fill=sc, font=font)
+            # 阴影
+            text_draw.text((tx + sh_off, ty + sh_off), target_words, fill=shadow_color, font=font)
+            # 正文
+            text_draw.text((tx, ty), target_words, fill=text_color, font=font)
 
-    result_pil.save(out, 'JPEG', quality=95)
+        # ── 5e. 纹理融合 ──
+        # 将文字图层与背景融合，并添加噪点匹配原图纹理
+        text_np = np.array(text_layer)
+        text_rgb = text_np[:, :, :3]
+        text_alpha = text_np[:, :, 3:4] / 255.0
+
+        # 合成到原图
+        result_np = np.array(result_pil).astype(np.float32)
+        blended = result_np * (1 - text_alpha) + text_rgb.astype(np.float32) * text_alpha
+        blended = np.clip(blended, 0, 255).astype(np.uint8)
+
+        # ── 5f. 噪点匹配（只在文字区域添加与原图纹理匹配的噪点）──
+        noise_mask = (text_alpha[:, :, 0] > 10).astype(np.uint8) * 255
+        if np.any(noise_mask > 0):
+            noise = np.random.normal(0, global_noise_std * 0.3, blended.shape).astype(np.int16)
+            # 只对文字区域加噪，外围衰减
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            noise_mask_dilated = cv2.dilate(noise_mask, kernel, iterations=2)
+            noise_faded = noise * (noise_mask_dilated / 255.0)[:, :, np.newaxis]
+            blended = np.clip(blended.astype(np.int16) + noise_faded, 0, 255).astype(np.uint8)
+
+        result_final = Image.fromarray(blended)
+        result_final.save(out, 'JPEG', quality=95)
+    else:
+        result_pil.save(out, 'JPEG', quality=95)
+
     return {"success": True, "explanation": f'✅ 改字完成："{source_words}"→"{target_words}" (百度OCR)'}
 
 
