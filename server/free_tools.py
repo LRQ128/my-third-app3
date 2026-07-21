@@ -248,33 +248,40 @@ def text_replace(inp, out, source_words, target_words):
                     bg_samples.append(avg)
 
     # ── 4. 擦除旧文字 ──
-    # 子串分割框（partial）用极小padding，整框擦除框用标准padding
-    mask = np.zeros((h, w), dtype=np.uint8)
-    base_radius = 3
+    # 关键改进：子串分割框（partial）用极小mask + Telea算法（边缘更锐利）
+    # 整框擦除框用标准inpaint
+    inpainted = img.copy()
     if erase_boxes:
-        for x, y, bw, bh, is_partial in erase_boxes:
-            if is_partial:
-                # 子串分割场景：极小平滑padding，不侵蚀相邻文字
-                pad = max(1, min(3, int(bh * 0.08)))
-                x1 = max(0, x - pad)
-                y1 = max(0, y - pad)
-                x2 = min(w, x + bw + pad)
-                y2 = min(h, y + bh + pad)
-            else:
-                # 整框擦除场景
+        # 先处理partial子串分割框（只擦文字精确区域，不碰相邻文字）
+        partial_boxes = [b for b in erase_boxes if b[4]]
+        full_boxes = [b for b in erase_boxes if not b[4]]
+        
+        # 对partial框：用Telea算法+极小半径，或者对纯色背景直接用颜色填充
+        if partial_boxes:
+            partial_mask = np.zeros((h, w), dtype=np.uint8)
+            for x, y, bw, bh, _ in partial_boxes:
+                # 精确到像素的擦除区域，不膨胀
+                x1 = max(0, x - 1)
+                y1 = max(0, y - 1)
+                x2 = min(w, x + bw + 1)
+                y2 = min(h, y + bh + 1)
+                cv2.rectangle(partial_mask, (x1, y1), (x2, y2), 255, -1)
+            # Telea算法更锐利，小半径3
+            inpainted = cv2.inpaint(inpainted, partial_mask, 3, cv2.INPAINT_TELEA)
+        
+        # 对full框：标准处理
+        if full_boxes:
+            full_mask = np.zeros((h, w), dtype=np.uint8)
+            for x, y, bw, bh, _ in full_boxes:
                 pad = max(4, int(min(bw, bh) * 0.15))
                 x1 = max(0, x - pad)
                 y1 = max(0, y - pad)
                 x2 = min(w, x + bw + pad)
                 y2 = min(h, y + bh + pad)
-            cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
-        max_box_size = max(bh for _, _, _, bh, _ in erase_boxes)
-        base_radius = min(max(3, int(max_box_size * 0.12)), 20)
-        inpainted = img.copy()
-        for _ in range(2):
-            inpainted = cv2.inpaint(inpainted, mask, base_radius, cv2.INPAINT_NS)
-    else:
-        inpainted = img.copy()
+                cv2.rectangle(full_mask, (x1, y1), (x2, y2), 255, -1)
+            max_bh = max(bh for _, _, _, bh, _ in full_boxes)
+            radius = min(max(3, int(max_bh * 0.1)), 12)
+            inpainted = cv2.inpaint(inpainted, full_mask, radius, cv2.INPAINT_NS)
 
     # ── 5. 写入新文字（改进版：描边 + 纹理匹配 + 噪点融合）──
     result_rgb = cv2.cvtColor(inpainted, cv2.COLOR_BGR2RGB)
@@ -367,14 +374,18 @@ def text_replace(inp, out, source_words, target_words):
 
             # ── 5b. 精确字体大小匹配 ──
             if is_partial:
-                # 子串替换场景：字体高度=原OCR框单字高度（近乎精确匹配原字体大小）
-                # target_words是几个字就用几个字的宽度空间
+                # 子串替换场景：用原OCR框内的文字实际尺寸
                 src_char_count = len(source_words)
                 tgt_char_count = len(target_words)
-                # 原文字单字高度 ≈ OCR框高度，宽度 ≈ OCR框宽度/字数
+                # 原文字单字宽度 ≈ OCR框宽度/字数
                 per_char_w = write_w / max(src_char_count, 1)
-                # 字体大小 = 原文字高度，不做缩放
-                font_size = max(10, write_h - 1)
+                # 字体大小用原OCR框高度（招牌场景文字高度=框高）
+                font_size = max(10, write_h - 2)
+                # 对等宽字体，font_size ≈ char_w * 1.0~1.2，用高度限制更准
+                # 但高度过大的情况（OCR框可能包含上下padding），用宽度修正
+                max_font_from_w = int(per_char_w * 1.4)
+                if font_size > max_font_from_w * 1.3:
+                    font_size = max_font_from_w
             else:
                 # 整框替换场景
                 font_size = max(14, write_h - 2)
@@ -416,32 +427,47 @@ def text_replace(inp, out, source_words, target_words):
                 tx = write_x + (write_w - tw) // 2
                 ty = write_y + (write_h - th) // 2
 
-            # ── 5c. 简洁绘制：仅正文（无描边/阴影，避免字体膨胀感）──
-            sh_off = max(1, min(3, int(font_size * 0.05)))
-            stroke_w = max(1, int(font_size * 0.05))
-
-            # 描边（极轻，仅防白底白字或黑底黑字）
-            if src_text_pixels:
-                src_avg = np.mean(src_text_pixels, axis=0)
-                src_avg_rgb = (int(src_avg[2]), int(src_avg[1]), int(src_avg[0]))
-                src_lum = 0.299 * src_avg_rgb[0] + 0.587 * src_avg_rgb[1] + 0.114 * src_avg_rgb[2]
-                if src_lum > 200:
-                    # 原文字偏白 → 白字+极浅灰描边
-                    stroke_color = (200, 200, 200, 60)
-                elif src_lum < 40:
-                    stroke_color = (40, 40, 40, 60)
+            # ── 5c. 多层渲染：立体感字体 ──
+            # 招牌字通常有立体/描边效果
+            stroke_w = max(1, int(font_size * 0.08))  # 描边宽度
+            shadow_off = max(2, min(5, int(font_size * 0.08)))  # 阴影偏移
+            
+            # 判断背景类型
+            bg_is_large_flat = is_red_bg or bg_lum < 70 or bg_lum > 200
+            
+            if is_partial:
+                # 子串替换（招牌场景）→ 需要立体效果
+                # 外描边（用背景互补色，制造立体边缘）
+                if is_red_bg or bg_lum < 128:
+                    # 暗红背景/深色背景 → 白字+淡灰描边+暗色阴影
+                    stroke_fill = (180, 180, 180, 160)  # 偏亮描边
+                    shadow_fill = (30, 20, 20, 120)     # 深红阴影
                 else:
-                    stroke_color = (128, 128, 128, 40)
-            for sx in range(-stroke_w, stroke_w + 1):
-                for sy in range(-stroke_w, stroke_w + 1):
-                    if sx != 0 or sy != 0:
-                        sc = (stroke_color[0], stroke_color[1], stroke_color[2], 
-                              60 if abs(sx) + abs(sy) < stroke_w * 1.5 else 25)
-                        text_draw.text((tx + sx, ty + sy), target_words, fill=sc, font=font)
-            # 阴影
-            text_draw.text((tx + sh_off, ty + sh_off), target_words, fill=shadow_color, font=font)
-            # 正文
-            text_draw.text((tx, ty), target_words, fill=text_color, font=font)
+                    # 亮色背景 → 黑字+淡色描边+深色阴影
+                    stroke_fill = (80, 80, 80, 100)
+                    shadow_fill = (120, 120, 120, 100)
+                
+                # 三步绘制：描边 → 阴影 → 正文
+                # 描边（扩大式，模拟立体边缘）
+                for sx in range(-stroke_w, stroke_w + 1):
+                    for sy in range(-stroke_w, stroke_w + 1):
+                        if sx != 0 or sy != 0:
+                            alpha = 180 if abs(sx) + abs(sy) <= stroke_w else 80
+                            sc = (stroke_fill[0], stroke_fill[1], stroke_fill[2], alpha)
+                            text_draw.text((tx + sx, ty + sy), target_words, fill=sc, font=font)
+                # 阴影（右下偏移）
+                text_draw.text((tx + shadow_off, ty + shadow_off), target_words, fill=shadow_fill, font=font)
+                # 正文
+                text_draw.text((tx, ty), target_words, fill=text_color, font=font)
+            else:
+                # 整框替换 → 标准描边+阴影
+                for sx in range(-stroke_w, stroke_w + 1):
+                    for sy in range(-stroke_w, stroke_w + 1):
+                        if sx != 0 or sy != 0:
+                            sc = (stroke_color[0], stroke_color[1], stroke_color[2], 80)
+                            text_draw.text((tx + sx, ty + sy), target_words, fill=sc, font=font)
+                text_draw.text((tx + shadow_off, ty + shadow_off), target_words, fill=shadow_color, font=font)
+                text_draw.text((tx, ty), target_words, fill=text_color, font=font)
 
         # ── 5e. 纹理融合 ──
         # 将文字图层与背景融合，并添加噪点匹配原图纹理
