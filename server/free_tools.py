@@ -101,6 +101,177 @@ def _baidu_ocr(inp_image_path):
     return boxes
 
 
+# ===================== LaMa AI Inpainting（首选引擎） =====================
+LAMA_MODEL_PATH = "/app/models/big-lama.onnx"
+_lama_session = None
+
+def _load_lama():
+    """加载LaMa ONNX模型（如果存在）"""
+    global _lama_session
+    if _lama_session is not None:
+        return _lama_session
+    candidates = [
+        LAMA_MODEL_PATH,
+        os.path.join(os.path.dirname(__file__), '..', 'models', 'big-lama.onnx'),
+        '/models/big-lama.onnx',
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            _lama_session = p
+            return _lama_session
+    return None
+
+
+def _lama_inpaint(img_bgr, mask):
+    """LaMa高精度AI补画
+    img_bgr: (h,w,3) uint8 BGR
+    mask: (h,w) uint8 binary（255=待修复区域）
+    返回: (h,w,3) uint8 BGR
+    """
+    import onnxruntime
+    model_path = _load_lama()
+    if model_path is None:
+        return None
+
+    h_orig, w_orig = img_bgr.shape[:2]
+    # LaMa要求尺寸为8的倍数
+    hp = (8 - h_orig % 8) % 8
+    wp = (8 - w_orig % 8) % 8
+    if hp or wp:
+        img_p = cv2.copyMakeBorder(img_bgr, 0, hp, 0, wp, cv2.BORDER_REFLECT)
+        mask_p = cv2.copyMakeBorder(mask, 0, hp, 0, wp, cv2.BORDER_CONSTANT, value=0)
+    else:
+        img_p = img_bgr.copy(); mask_p = mask.copy()
+    h, w = img_p.shape[:2]
+
+    img_n = img_p.astype(np.float32) / 127.5 - 1.0
+    mask_n = (mask_p > 127).astype(np.float32)
+    inp = img_n * (1 - mask_n[:, :, np.newaxis])
+    inp_4d = inp.transpose(2, 0, 1)[np.newaxis, :, :, :]
+    mask_4d = mask_n[np.newaxis, np.newaxis, :, :]
+
+    try:
+        ort = onnxruntime.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+        out = ort.run(None, {
+            ort.get_inputs()[0].name: inp_4d.astype(np.float32),
+            ort.get_inputs()[1].name: mask_4d.astype(np.float32),
+        })[0]
+        res = out[0].transpose(1, 2, 0)  # (H,W,3)
+        res = ((res + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
+        if hp or wp:
+            res = res[:h_orig, :w_orig]
+        return res
+    except Exception as e:
+        print(f"[lama] {e}", file=sys.stderr)
+        return None
+
+
+def _rbf_inpaint(img_bgr, mask, radius=30):
+    """Scipy RBF插值补画 — 比cv2.inpaint平滑10倍，不产生涂抹感
+    原理：从待修复区域边界像素用径向基函数插值填充内部
+    """
+    from scipy.interpolate import RBFInterpolator
+    h, w = img_bgr.shape[:2]
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    md = cv2.dilate(mask, kernel, iterations=2)
+    boundary = md & ~mask
+    by, bx = np.where(boundary > 0)
+    if len(by) < 30:
+        return None
+    bv = img_bgr[by, bx].astype(np.float32)
+    hy, hx = np.where(mask > 0)
+    if len(hy) == 0:
+        return img_bgr.copy()
+
+    result = img_bgr.copy().astype(np.float32)
+    for c in range(3):
+        try:
+            rbf = RBFInterpolator(np.column_stack([bx, by]), bv[:, c], kernel='linear', epsilon=radius)
+            hv = rbf(np.column_stack([hx, hy]))
+            result[hy, hx, c] = hv
+        except Exception:
+            pass
+    result = result.clip(0, 255).astype(np.uint8)
+
+    # 轻量纹理迁移：从周围区域采纹理特征加到填充区域
+    src_area = img_bgr[max(0, h//4):min(h, 3*h//4), max(0, w//4):min(w, 3*w//4)]
+    if src_area.size > 0:
+        src_gray = cv2.cvtColor(src_area, cv2.COLOR_BGR2GRAY)
+        ns = np.std(src_gray) * 0.04
+        if ns > 0.5:
+            noise = np.random.normal(0, ns, (hy.shape[0], 3))
+            fm = result[hy, hx].astype(np.int16) + noise.astype(np.int16)
+            result[hy, hx] = fm.clip(0, 255).astype(np.uint8)
+    return cv2.fastNlMeansDenoisingColored(result, None, 3, 3, 5, 15)
+
+
+def _smart_erase(img, erase_boxes, lama_available):
+    """智能擦除：LaMa > RBF > cv2.inpaint 三层渐进"""
+    h, w = img.shape[:2]
+    full_mask = np.zeros((h, w), dtype=np.uint8)
+    for x, y, bw, bh, is_partial in erase_boxes:
+        pad = 2 if is_partial else max(3, int(min(bw, bh) * 0.1))
+        x1 = max(0, x - pad); y1 = max(0, y - pad)
+        x2 = min(w, x + bw + pad); y2 = min(h, y + bh + pad)
+        cv2.rectangle(full_mask, (x1, y1), (x2, y2), 255, -1)
+
+    # Step 1: LaMa
+    if lama_available:
+        r = _lama_inpaint(img, full_mask)
+        if r is not None:
+            return r, "LaMa"
+    # Step 2: RBF
+    r = _rbf_inpaint(img, full_mask, radius=25)
+    if r is not None:
+        return r, "RBF"
+    # Step 3: cv2.inpaint (兜底)
+    partial_mask = np.zeros((h, w), dtype=np.uint8)
+    full_pmask = np.zeros((h, w), dtype=np.uint8)
+    for x, y, bw, bh, is_partial in erase_boxes:
+        if is_partial:
+            cv2.rectangle(partial_mask, (x-1, y-1), (x+bw+1, y+bh+1), 255, -1)
+        else:
+            pad = max(3, int(min(bw, bh)*0.12))
+            cv2.rectangle(full_pmask, (x-pad, y-pad), (x+bw+pad, y+bh+pad), 255, -1)
+    result = img.copy()
+    if partial_mask.any():
+        result = cv2.inpaint(result, partial_mask, 3, cv2.INPAINT_TELEA)
+    if full_pmask.any():
+        mx = max(3, min(10, int(max([b[3] for b in erase_boxes])*0.08)))
+        result = cv2.inpaint(result, full_pmask, mx, cv2.INPAINT_NS)
+    return result, "cv2"
+
+
+def _analyze_text_style(img_rgb, text_box, bg_samples):
+    """分析原文字的风格属性，用于匹配新文字"""
+    x, y, bw, bh = text_box
+    area = img_rgb[y:y+bh, x:x+bw]
+    if area.size == 0:
+        return {}
+    gray = cv2.cvtColor(area, cv2.COLOR_RGB2GRAY)
+    # 文字像素 vs 背景像素
+    if bg_samples:
+        bg_avg = np.mean(bg_samples, axis=0)
+        bg_lum = 0.299*bg_avg[2] + 0.587*bg_avg[1] + 0.114*bg_avg[0]
+    else:
+        gray_all = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+        bg_lum = np.median(gray_all)
+    # 文字亮度阈值
+    if bg_lum > 128:
+        text_mask = gray < np.percentile(gray, 40)
+    else:
+        text_mask = gray > np.percentile(gray, 60)
+    text_px = area[text_mask]
+    text_color = np.mean(text_px, axis=0) if len(text_px) > 10 else np.array([255, 255, 255])
+    text_lum = 0.299*text_color[0] + 0.587*text_color[1] + 0.114*text_color[2]
+    return {
+        "color": tuple(int(c) for c in text_color),
+        "is_light": text_lum > 128,
+        "text_lum": text_lum,
+        "bg_lum": bg_lum,
+    }
+
+
 # ===================== 工具函数 =====================
 
 def cutout(inp, out):
@@ -117,6 +288,8 @@ def cutout(inp, out):
 def text_replace(inp, out, source_words, target_words):
     cv2 = _get_cv2()
     from PIL import Image, ImageDraw, ImageFont
+
+    lama_available = _load_lama() is not None
 
     img = cv2.imread(inp)
     if img is None:
@@ -158,30 +331,32 @@ def text_replace(inp, out, source_words, target_words):
     for x, y, bw, bh, ocr_text, is_exact in match_info:
         ocr_len = len(ocr_text)
         src_len = len(source_words)
+        ocr_lower = ocr_text.lower()
+        src_lower_local = source_words.lower()
 
         if is_exact and ocr_len > src_len and src_len > 0:
-            # source_words 是 ocr_text 的子串 → 只在对应位置擦除和写入
-            # 更精确的字符宽度分配：找到source在ocr_text中的精确位置
-            src_idx = ocr_text.lower().find(source_lower)
-            if src_idx < 0:
-                src_idx = 0
-            # 单字符平均宽度
-            char_w = bw / max(ocr_len, 1)
-            seg_x = x + int(char_w * src_idx)
-            seg_w = int(char_w * src_len)
-            # 子串分割场景：极小的擦除padding，不侵蚀相邻文字
-            seg_pad_x = max(1, int(char_w * 0.08))  # 单侧半个像素级padding
-            ex1 = max(0, seg_x - seg_pad_x)
-            ey1 = max(0, y - 1)
-            ex2 = min(w, seg_x + seg_w + seg_pad_x)
-            ey2 = min(h, y + bh + 1)
-            erase_boxes.append((ex1, ey1, ex2 - ex1, ey2 - ey1, True))
-            # 写入区域：精确匹配原文字位置和大小
-            write_boxes.append((seg_x, y, seg_w, bh, True, x, y, bw, bh))
-        else:
-            # 完全匹配或模糊匹配 → 整块擦除（非子串分割）
-            erase_boxes.append((x, y, bw, bh, False))
-            write_boxes.append((x, y, bw, bh, False, x, y, bw, bh))
+            # source_words 是 OCR 文字的子串 → 只擦除对应的子串部分
+            # 关键：确认source确实在ocr_text内部
+            src_idx = ocr_lower.find(src_lower_local)
+            if src_idx >= 0:
+                char_w = bw / max(ocr_len, 1)
+                seg_x = x + int(char_w * src_idx)
+                seg_w = int(char_w * src_len)
+                # 极小padding
+                pad_x = max(1, int(char_w * 0.1))
+                pad_y = max(1, int(bh * 0.08))
+                ex1 = max(0, seg_x - pad_x)
+                ey1 = max(0, y - pad_y)
+                ex2 = min(w, seg_x + seg_w + pad_x)
+                ey2 = min(h, y + bh + pad_y)
+                erase_boxes.append((ex1, ey1, ex2 - ex1, ey2 - ey1, True))
+                write_boxes.append((seg_x, y, seg_w, bh, True, x, y, bw, bh))
+                continue
+        
+        # 兜底1：OCR框包含source（如OCR返回'贺泽'但source='贺泽'）→ 精确匹配
+        # 兜底2：整框擦除（source包含OCR文字或模糊匹配）
+        erase_boxes.append((x, y, bw, bh, False))
+        write_boxes.append((x, y, bw, bh, False, x, y, bw, bh))
 
     # 合并重叠擦除框（只合并整块匹配的框，子串分割框独立处理）
     full_erase = [b for b in erase_boxes if not b[4]]
@@ -247,41 +422,10 @@ def text_replace(inp, out, source_words, target_words):
                     avg = np.mean(area.reshape(-1, 3), axis=0)
                     bg_samples.append(avg)
 
-    # ── 4. 擦除旧文字 ──
-    # 关键改进：子串分割框（partial）用极小mask + Telea算法（边缘更锐利）
-    # 整框擦除框用标准inpaint
+    # ── 4. 智能擦除旧文字（LaMa > RBF > cv2.inpaint 三层渐进）──
     inpainted = img.copy()
     if erase_boxes:
-        # 先处理partial子串分割框（只擦文字精确区域，不碰相邻文字）
-        partial_boxes = [b for b in erase_boxes if b[4]]
-        full_boxes = [b for b in erase_boxes if not b[4]]
-        
-        # 对partial框：用Telea算法+极小半径，或者对纯色背景直接用颜色填充
-        if partial_boxes:
-            partial_mask = np.zeros((h, w), dtype=np.uint8)
-            for x, y, bw, bh, _ in partial_boxes:
-                # 精确到像素的擦除区域，不膨胀
-                x1 = max(0, x - 1)
-                y1 = max(0, y - 1)
-                x2 = min(w, x + bw + 1)
-                y2 = min(h, y + bh + 1)
-                cv2.rectangle(partial_mask, (x1, y1), (x2, y2), 255, -1)
-            # Telea算法更锐利，小半径3
-            inpainted = cv2.inpaint(inpainted, partial_mask, 3, cv2.INPAINT_TELEA)
-        
-        # 对full框：标准处理
-        if full_boxes:
-            full_mask = np.zeros((h, w), dtype=np.uint8)
-            for x, y, bw, bh, _ in full_boxes:
-                pad = max(4, int(min(bw, bh) * 0.15))
-                x1 = max(0, x - pad)
-                y1 = max(0, y - pad)
-                x2 = min(w, x + bw + pad)
-                y2 = min(h, y + bh + pad)
-                cv2.rectangle(full_mask, (x1, y1), (x2, y2), 255, -1)
-            max_bh = max(bh for _, _, _, bh, _ in full_boxes)
-            radius = min(max(3, int(max_bh * 0.1)), 12)
-            inpainted = cv2.inpaint(inpainted, full_mask, radius, cv2.INPAINT_NS)
+        inpainted, algo = _smart_erase(img.copy(), erase_boxes, lama_available)
 
     # ── 5. 写入新文字（改进版：描边 + 纹理匹配 + 噪点融合）──
     result_rgb = cv2.cvtColor(inpainted, cv2.COLOR_BGR2RGB)

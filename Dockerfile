@@ -36,7 +36,17 @@ RUN npm install && npm cache clean --force
 COPY server/requirements.txt ./server/requirements.txt
 RUN pip install --no-cache-dir -r server/requirements.txt
 
-# Step 5: 复制全部代码
+# Step 5: 下载 LaMa AI Inpainting 模型（在线环境可能不同，尝试下载）
+RUN mkdir -p /app/models /models && \
+    echo "尝试下载LaMa模型..." && \
+    (curl -sL -o /app/models/big-lama.onnx "https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.onnx" && \
+     echo "LaMa模型下载成功" || \
+     (curl -sL -o /app/models/big-lama.onnx "https://huggingface.co/smartywu/big-lama-onnx/resolve/main/big-lama.onnx" && \
+      echo "LaMa模型下载成功(备选源)" || \
+      echo "LaMa模型下载失败，将使用RBF插值兜底")) && \
+    ls -lh /app/models/ 2>/dev/null || true
+
+# Step 6: 复制全部代码
 COPY . .
 
 # 环境变量
