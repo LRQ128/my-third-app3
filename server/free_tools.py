@@ -150,9 +150,10 @@ def text_replace(inp, out, source_words, target_words):
                     break
 
     # ── 2. 智能分块：如果OCR框包含多余字符，只擦除目标部分 ──
-    # 比如 OCR 检测到 "贺泽鲜肉"，但只改 "贺泽" → 保留 "鲜肉"
-    erase_boxes = []  # 实际要擦除的 (x, y, w, h)
-    write_boxes = []  # 实际要写字的 (x, y, w, h, 背景采样区域)
+    # 比如 OCR 检测到 "贺泽鲜肉店"，但只改 "贺泽" → 保留 "鲜肉店"
+    # (x, y, w, h, is_partial) — is_partial=True 表示子串分割，需极小padding
+    erase_boxes = []
+    write_boxes = []  # (x, y, w, h, is_partial, orig_x, orig_y, orig_w, orig_h)
 
     for x, y, bw, bh, ocr_text, is_exact in match_info:
         ocr_len = len(ocr_text)
@@ -160,57 +161,60 @@ def text_replace(inp, out, source_words, target_words):
 
         if is_exact and ocr_len > src_len and src_len > 0:
             # source_words 是 ocr_text 的子串 → 只在对应位置擦除和写入
-            # 按字符宽度比例分割
-            char_ratio = src_len / max(ocr_len, 1)
-            # 找到 source 在 text 中的位置
+            # 更精确的字符宽度分配：找到source在ocr_text中的精确位置
             src_idx = ocr_text.lower().find(source_lower)
             if src_idx < 0:
                 src_idx = 0
-            # 起始偏移 = 总宽 * (source起始位置 / 总字符数)
-            offset_ratio = src_idx / max(ocr_len, 1)
-            seg_w = bw * char_ratio
-            seg_x = x + int(bw * offset_ratio)
-            # 微调：左右各加一点padding
-            seg_pad_x = int(seg_w * 0.05)
-            # 擦除区域（只擦除目标文字部分）
+            # 单字符平均宽度
+            char_w = bw / max(ocr_len, 1)
+            seg_x = x + int(char_w * src_idx)
+            seg_w = int(char_w * src_len)
+            # 子串分割场景：极小的擦除padding，不侵蚀相邻文字
+            seg_pad_x = max(1, int(char_w * 0.08))  # 单侧半个像素级padding
             ex1 = max(0, seg_x - seg_pad_x)
-            ey1 = max(0, y - 2)
-            ex2 = min(w, seg_x + int(seg_w) + seg_pad_x)
-            ey2 = min(h, y + bh + 2)
-            erase_boxes.append((ex1, ey1, ex2 - ex1, ey2 - ey1))
-            # 写入区域（与擦除区域一致，但用于居中写新字）
-            write_boxes.append((seg_x, y, int(seg_w), bh, x, y, bw, bh))
+            ey1 = max(0, y - 1)
+            ex2 = min(w, seg_x + seg_w + seg_pad_x)
+            ey2 = min(h, y + bh + 1)
+            erase_boxes.append((ex1, ey1, ex2 - ex1, ey2 - ey1, True))
+            # 写入区域：精确匹配原文字位置和大小
+            write_boxes.append((seg_x, y, seg_w, bh, True, x, y, bw, bh))
         else:
-            # 完全匹配或模糊匹配 → 整块擦除
-            erase_boxes.append((x, y, bw, bh))
-            write_boxes.append((x, y, bw, bh, x, y, bw, bh))
+            # 完全匹配或模糊匹配 → 整块擦除（非子串分割）
+            erase_boxes.append((x, y, bw, bh, False))
+            write_boxes.append((x, y, bw, bh, False, x, y, bw, bh))
 
-    # 合并重叠擦除框
-    if erase_boxes:
-        erase_boxes.sort(key=lambda b: (b[1], b[0]))
-        merged = [erase_boxes[0]]
-        for box in erase_boxes[1:]:
+    # 合并重叠擦除框（只合并整块匹配的框，子串分割框独立处理）
+    full_erase = [b for b in erase_boxes if not b[4]]
+    partial_erase = [b for b in erase_boxes if b[4]]
+    if full_erase:
+        full_erase.sort(key=lambda b: (b[1], b[0]))
+        merged = [full_erase[0]]
+        for box in full_erase[1:]:
             last = merged[-1]
             if abs(box[1] - last[1]) < 20 and box[0] - (last[0] + last[2]) < 30:
                 nx = min(last[0], box[0])
                 ny = min(last[1], box[1])
                 nw = max(last[0] + last[2], box[0] + box[2]) - nx
                 nh = max(last[1] + last[3], box[1] + box[3]) - ny
-                merged[-1] = (nx, ny, nw, nh)
+                merged[-1] = (nx, ny, nw, nh, False)
             else:
                 merged.append(box)
-        erase_boxes = merged
+        erase_boxes = merged + partial_erase
+    else:
+        erase_boxes = partial_erase
 
-    # ── 3. 采集纯背景颜色（从文字框周边角落，不含文字本身）──
+    # ── 3. 采集纯背景颜色 & 源文字颜色 ──
     bg_samples = []  # [(B, G, R), ...] 纯背景采样
+    # 源文字颜色采样：从原图OCR文字区域内取白色/高亮像素（文字颜色）
+    src_text_pixels = []
     if erase_boxes:
         for x, y, bw, bh in erase_boxes:
-            # 从文字框四个角落外沿采样（避开文字区域）
+            # 背景采样：从文字框四周外沿（避开文字本身）
             corners = [
-                (x - 10, y - 10, 10, 10),
-                (x + bw - 10, y - 10, 10, 10),
-                (x - 10, y + bh - 10, 10, 10),
-                (x + bw - 10, y + bh - 10, 10, 10),
+                (x - 8, y - 8, 8, 8),
+                (x + bw - 8, y - 8, 8, 8),
+                (x - 8, y + bh - 8, 8, 8),
+                (x + bw - 8, y + bh - 8, 8, 8),
             ]
             for cx, cy, cw, ch in corners:
                 if cx >= 0 and cy >= 0 and cx + cw <= w and cy + ch <= h:
@@ -218,6 +222,16 @@ def text_replace(inp, out, source_words, target_words):
                     if area.size > 0:
                         avg = np.mean(area.reshape(-1, 3), axis=0)
                         bg_samples.append(avg)
+            # 源文字颜色采样：从文字区域内部取高亮像素（文字本身颜色）
+            text_area = img[y:y + bh, x:x + bw]
+            if text_area.size > 0:
+                text_gray = cv2.cvtColor(text_area, cv2.COLOR_BGR2GRAY)
+                # 取亮度前30%的像素作为文字颜色
+                bright_thresh = np.percentile(text_gray, 70)
+                bright_mask = text_gray >= bright_thresh
+                if np.sum(bright_mask) > 10:
+                    bright_pixels = text_area[bright_mask]
+                    src_text_pixels.append(np.mean(bright_pixels, axis=0))
         # 如果角落采样不够，扩大范围
         if len(bg_samples) < 2:
             for x, y, bw, bh in erase_boxes:
@@ -231,21 +245,31 @@ def text_replace(inp, out, source_words, target_words):
                     avg = np.mean(area.reshape(-1, 3), axis=0)
                     bg_samples.append(avg)
 
-    # ── 4. 擦除旧文字（改进版：双遍 inpaint + 自适应半径）──
+    # ── 4. 擦除旧文字 ──
+    # 子串分割框（partial）用极小padding，整框擦除框用标准padding
     mask = np.zeros((h, w), dtype=np.uint8)
+    base_radius = 3
     if erase_boxes:
-        for x, y, bw, bh in erase_boxes:
-            pad = max(8, int(min(bw, bh) * 0.25))
-            x1 = max(0, x - pad)
-            y1 = max(0, y - pad)
-            x2 = min(w, x + bw + pad)
-            y2 = min(h, y + bh + pad)
+        for x, y, bw, bh, is_partial in erase_boxes:
+            if is_partial:
+                # 子串分割场景：极小平滑padding，不侵蚀相邻文字
+                pad = max(1, min(3, int(bh * 0.08)))
+                x1 = max(0, x - pad)
+                y1 = max(0, y - pad)
+                x2 = min(w, x + bw + pad)
+                y2 = min(h, y + bh + pad)
+            else:
+                # 整框擦除场景
+                pad = max(4, int(min(bw, bh) * 0.15))
+                x1 = max(0, x - pad)
+                y1 = max(0, y - pad)
+                x2 = min(w, x + bw + pad)
+                y2 = min(h, y + bh + pad)
             cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
-        max_box_size = max(bh for _, _, _, _ in erase_boxes)
-        # 大区域用大半径多遍修复
-        base_radius = min(max(3, int(max_box_size * 0.15)), 20)
+        max_box_size = max(bh for _, _, _, _, _ in erase_boxes)
+        base_radius = min(max(3, int(max_box_size * 0.12)), 20)
         inpainted = img.copy()
-        for _ in range(2):  # 双遍修复，减少模糊
+        for _ in range(2):
             inpainted = cv2.inpaint(inpainted, mask, base_radius, cv2.INPAINT_NS)
     else:
         inpainted = img.copy()
@@ -313,60 +337,103 @@ def text_replace(inp, out, source_words, target_words):
 
         for box in write_boxes:
             write_x, write_y, write_w, write_h = box[0], box[1], box[2], box[3]
+            is_partial = box[4]
 
-            # ── 5a. 确定文字颜色（带透明度通道）──
-            if is_red_bg:
-                text_color = (255, 255, 255, 235)
-                stroke_color = (80, 20, 20, 120)  # 暗红描边
-                shadow_color = (20, 10, 10, 100)
-            elif bg_lum > 150:
-                text_color = (0, 0, 0, 235)
-                stroke_color = (180, 180, 180, 80)
-                shadow_color = (200, 200, 200, 80)
-            elif bg_lum < 70:
-                text_color = (255, 255, 255, 235)
-                stroke_color = (30, 30, 30, 100)
-                shadow_color = (10, 10, 10, 100)
-            else:
-                if bg_lum < 128:
+            # ── 5a. 确定文字颜色 ──
+            # 优先从源文字区域采样颜色
+            if src_text_pixels:
+                src_avg = np.mean(src_text_pixels, axis=0)
+                src_avg_rgb = (int(src_avg[2]), int(src_avg[1]), int(src_avg[0]))
+                src_lum = 0.299 * src_avg_rgb[0] + 0.587 * src_avg_rgb[1] + 0.114 * src_avg_rgb[2]
+                # 源文字偏亮 → 白字；偏暗 → 黑字
+                if src_lum > 128:
                     text_color = (255, 255, 255, 235)
-                    stroke_color = (50, 50, 50, 80)
-                    shadow_color = (10, 10, 10, 100)
                 else:
                     text_color = (0, 0, 0, 235)
-                    stroke_color = (180, 180, 180, 80)
-                    shadow_color = (200, 200, 200, 80)
+            elif is_red_bg:
+                text_color = (255, 255, 255, 235)
+            elif bg_lum > 150:
+                text_color = (0, 0, 0, 235)
+            elif bg_lum < 70:
+                text_color = (255, 255, 255, 235)
+            else:
+                text_color = (255, 255, 255, 235) if bg_lum < 128 else (0, 0, 0, 235)
 
-            # ── 5b. 自适应字体大小（宽度+高度双维度）──
-            font_size = max(14, write_h - 2)
+            stroke_color = (128, 128, 128, 80)
+            shadow_color = (64, 64, 64, 60)
+
+            # ── 5b. 精确字体大小匹配 ──
+            if is_partial:
+                # 子串替换场景：字体高度=原OCR框单字高度（近乎精确匹配原字体大小）
+                # target_words是几个字就用几个字的宽度空间
+                src_char_count = len(source_words)
+                tgt_char_count = len(target_words)
+                # 原文字单字高度 ≈ OCR框高度，宽度 ≈ OCR框宽度/字数
+                per_char_w = write_w / max(src_char_count, 1)
+                # 字体大小 = 原文字高度，不做缩放
+                font_size = max(10, write_h - 1)
+            else:
+                # 整框替换场景
+                font_size = max(14, write_h - 2)
+
             font = _get_font(font_size)
             bbox = text_draw.textbbox((0, 0), target_words, font=font)
             tw = bbox[2] - bbox[0]
             th = bbox[3] - bbox[1]
 
-            w_ratio = write_w * 0.88 / max(tw, 1)
-            h_ratio = write_h * 0.82 / max(th, 1)
-            ratio = min(w_ratio, h_ratio, 1.0)
-            if ratio < 0.95:
-                font_size = max(10, int(font_size * ratio))
-                font = _get_font(font_size)
-                bbox = text_draw.textbbox((0, 0), target_words, font=font)
-                tw = bbox[2] - bbox[0]
-                th = bbox[3] - bbox[1]
+            if is_partial:
+                # 子串替换：新文字宽度严格适配原文字的空间
+                # 原字每个字符占 write_w / src_char_count 宽度
+                # 新字 tgt_char_count 个字符，总宽 ≈ per_char_w * tgt_char_count
+                # 如果新字比原字宽 → 缩小，窄 → 扩大填充
+                ideal_w = per_char_w * tgt_char_count
+                # 用高度约束为主，宽度为辅（保证字号与原文一致）
+                # 先试原高度，如果新字太宽则缩小
+                ratio = min(1.0, ideal_w * 0.95 / max(tw, 1))
+                if ratio < 0.98:
+                    font_size = max(8, int(font_size * ratio))
+                    font = _get_font(font_size)
+                    bbox = text_draw.textbbox((0, 0), target_words, font=font)
+                    tw = bbox[2] - bbox[0]
+                    th = bbox[3] - bbox[1]
+                # 新字居中在原文子串区域
+                tx = write_x + (write_w - tw) // 2
+                ty = write_y + (write_h - th) // 2 - 1
+            else:
+                # 整框替换：自适应
+                w_ratio = write_w * 0.88 / max(tw, 1)
+                h_ratio = write_h * 0.82 / max(th, 1)
+                ratio = min(w_ratio, h_ratio, 1.0)
+                if ratio < 0.95:
+                    font_size = max(10, int(font_size * ratio))
+                    font = _get_font(font_size)
+                    bbox = text_draw.textbbox((0, 0), target_words, font=font)
+                    tw = bbox[2] - bbox[0]
+                    th = bbox[3] - bbox[1]
+                tx = write_x + (write_w - tw) // 2
+                ty = write_y + (write_h - th) // 2
 
-            # ── 5c. 居中 ──
-            tx = write_x + (write_w - tw) // 2
-            ty = write_y + (write_h - th) // 2
-            sh_off = max(2, min(4, int(font_size * 0.07)))
-            stroke_w = max(1, int(font_size * 0.06))
+            # ── 5c. 简洁绘制：仅正文（无描边/阴影，避免字体膨胀感）──
+            sh_off = max(1, min(3, int(font_size * 0.05)))
+            stroke_w = max(1, int(font_size * 0.05))
 
-            # ── 5d. 三层绘制：描边 → 阴影 → 正文 ──
-            # 描边（模拟立体字的边缘）
+            # 描边（极轻，仅防白底白字或黑底黑字）
+            if src_text_pixels:
+                src_avg = np.mean(src_text_pixels, axis=0)
+                src_avg_rgb = (int(src_avg[2]), int(src_avg[1]), int(src_avg[0]))
+                src_lum = 0.299 * src_avg_rgb[0] + 0.587 * src_avg_rgb[1] + 0.114 * src_avg_rgb[2]
+                if src_lum > 200:
+                    # 原文字偏白 → 白字+极浅灰描边
+                    stroke_color = (200, 200, 200, 60)
+                elif src_lum < 40:
+                    stroke_color = (40, 40, 40, 60)
+                else:
+                    stroke_color = (128, 128, 128, 40)
             for sx in range(-stroke_w, stroke_w + 1):
                 for sy in range(-stroke_w, stroke_w + 1):
                     if sx != 0 or sy != 0:
-                        stroke_alpha = 60 if abs(sx) + abs(sy) < stroke_w * 1.5 else 30
-                        sc = (stroke_color[0], stroke_color[1], stroke_color[2], stroke_alpha)
+                        sc = (stroke_color[0], stroke_color[1], stroke_color[2], 
+                              60 if abs(sx) + abs(sy) < stroke_w * 1.5 else 25)
                         text_draw.text((tx + sx, ty + sy), target_words, fill=sc, font=font)
             # 阴影
             text_draw.text((tx + sh_off, ty + sh_off), target_words, fill=shadow_color, font=font)
