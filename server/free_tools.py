@@ -208,7 +208,8 @@ def text_replace(inp, out, source_words, target_words):
     # 源文字颜色采样：从原图OCR文字区域内取白色/高亮像素（文字颜色）
     src_text_pixels = []
     if erase_boxes:
-        for x, y, bw, bh in erase_boxes:
+        for box in erase_boxes:
+            x, y, bw, bh = box[0], box[1], box[2], box[3]
             # 背景采样：从文字框四周外沿（避开文字本身）
             corners = [
                 (x - 8, y - 8, 8, 8),
@@ -234,7 +235,8 @@ def text_replace(inp, out, source_words, target_words):
                     src_text_pixels.append(np.mean(bright_pixels, axis=0))
         # 如果角落采样不够，扩大范围
         if len(bg_samples) < 2:
-            for x, y, bw, bh in erase_boxes:
+            for box in erase_boxes:
+                x, y, bw, bh = box[0], box[1], box[2], box[3]
                 pad = max(bh, 20)
                 x1_s = max(0, x - pad)
                 y1_s = max(0, y - pad)
@@ -266,7 +268,7 @@ def text_replace(inp, out, source_words, target_words):
                 x2 = min(w, x + bw + pad)
                 y2 = min(h, y + bh + pad)
             cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
-        max_box_size = max(bh for _, _, _, _, _ in erase_boxes)
+        max_box_size = max(bh for _, _, _, bh, _ in erase_boxes)
         base_radius = min(max(3, int(max_box_size * 0.12)), 20)
         inpainted = img.copy()
         for _ in range(2):
@@ -314,7 +316,8 @@ def text_replace(inp, out, source_words, target_words):
         # 采样周边纹理/噪点强度（用于后续融合）
         texture_areas = []
         if bg_samples:
-            for bx, by, bw, bh in erase_boxes:
+            for box in erase_boxes:
+                bx, by, bw, bh = box[0], box[1], box[2], box[3]
                 pad = max(10, bh)
                 x1_s = max(0, bx - pad)
                 y1_s = max(0, by - pad)
