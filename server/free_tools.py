@@ -106,67 +106,11 @@ LAMA_MODEL_PATH = "/app/models/big-lama.onnx"
 _lama_session = None
 
 def _load_lama():
-    """加载LaMa ONNX模型（如果存在）"""
-    global _lama_session
-    if _lama_session is not None:
-        return _lama_session
-    candidates = [
-        LAMA_MODEL_PATH,
-        os.path.join(os.path.dirname(__file__), '..', 'models', 'big-lama.onnx'),
-        '/models/big-lama.onnx',
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            _lama_session = p
-            return _lama_session
+    """LaMa已禁用（2C2GB内存不够跑两个实例），降级到RBF+cv2.inpaint"""
     return None
-
-
 def _lama_inpaint(img_bgr, mask):
-    cv2 = _get_cv2()
-    """LaMa高精度AI补画
-    img_bgr: (h,w,3) uint8 BGR
-    mask: (h,w) uint8 binary（255=待修复区域）
-    返回: (h,w,3) uint8 BGR
-    """
-    import onnxruntime
-    model_path = _load_lama()
-    if model_path is None:
-        return None
-
-    h_orig, w_orig = img_bgr.shape[:2]
-    # LaMa要求尺寸为8的倍数
-    hp = (8 - h_orig % 8) % 8
-    wp = (8 - w_orig % 8) % 8
-    if hp or wp:
-        img_p = cv2.copyMakeBorder(img_bgr, 0, hp, 0, wp, cv2.BORDER_REFLECT)
-        mask_p = cv2.copyMakeBorder(mask, 0, hp, 0, wp, cv2.BORDER_CONSTANT, value=0)
-    else:
-        img_p = img_bgr.copy(); mask_p = mask.copy()
-    h, w = img_p.shape[:2]
-
-    img_n = img_p.astype(np.float32) / 127.5 - 1.0
-    mask_n = (mask_p > 127).astype(np.float32)
-    inp = img_n * (1 - mask_n[:, :, np.newaxis])
-    inp_4d = inp.transpose(2, 0, 1)[np.newaxis, :, :, :]
-    mask_4d = mask_n[np.newaxis, np.newaxis, :, :]
-
-    try:
-        ort = onnxruntime.InferenceSession(model_path, providers=['CPUExecutionProvider'])
-        out = ort.run(None, {
-            ort.get_inputs()[0].name: inp_4d.astype(np.float32),
-            ort.get_inputs()[1].name: mask_4d.astype(np.float32),
-        })[0]
-        res = out[0].transpose(1, 2, 0)  # (H,W,3)
-        res = ((res + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
-        if hp or wp:
-            res = res[:h_orig, :w_orig]
-        return res
-    except Exception as e:
-        print(f"[lama] {e}", file=sys.stderr)
-        return None
-
-
+    """LaMa已禁用，直接返回None降级"""
+    return None
 def _rbf_inpaint(img_bgr, mask, radius=30):
     cv2 = _get_cv2()
     """Scipy RBF插值补画 — 比cv2.inpaint平滑10倍，不产生涂抹感
