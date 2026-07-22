@@ -123,6 +123,7 @@ def _load_lama():
 
 
 def _lama_inpaint(img_bgr, mask):
+    cv2 = _get_cv2()
     """LaMa高精度AI补画
     img_bgr: (h,w,3) uint8 BGR
     mask: (h,w) uint8 binary（255=待修复区域）
@@ -167,6 +168,7 @@ def _lama_inpaint(img_bgr, mask):
 
 
 def _rbf_inpaint(img_bgr, mask, radius=30):
+    cv2 = _get_cv2()
     """Scipy RBF插值补画 — 比cv2.inpaint平滑10倍，不产生涂抹感
     原理：从待修复区域边界像素用径向基函数插值填充内部
     """
@@ -206,6 +208,7 @@ def _rbf_inpaint(img_bgr, mask, radius=30):
 
 
 def _smart_erase(img, erase_boxes, lama_available):
+    cv2 = _get_cv2()
     """智能擦除：LaMa > RBF > cv2.inpaint 三层渐进"""
     h, w = img.shape[:2]
     full_mask = np.zeros((h, w), dtype=np.uint8)
@@ -243,6 +246,7 @@ def _smart_erase(img, erase_boxes, lama_available):
 
 
 def _analyze_text_style(img_rgb, text_box, bg_samples):
+    cv2 = _get_cv2()
     """分析原文字的风格属性，用于匹配新文字"""
     x, y, bw, bh = text_box
     area = img_rgb[y:y+bh, x:x+bw]
