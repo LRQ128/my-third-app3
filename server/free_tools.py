@@ -254,6 +254,15 @@ def text_replace(inp, out, source_words, target_words):
         return {"error": "无法读取图片"}
     h, w = img.shape[:2]
 
+    # 图片压缩：长边超过1920px时等比缩小，加快OCR和擦除速度
+    max_dim = 1920
+    if max(h, w) > max_dim:
+        scale = max_dim / max(h, w)
+        new_w, new_h = int(w * scale), int(h * scale)
+        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        h, w = new_h, new_w
+        cv2.imwrite(inp, img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+
     try:
         ocr_boxes = _baidu_ocr(inp)
     except Exception as e:
