@@ -12,15 +12,7 @@ import sys, json, os, re, traceback, time, base64, urllib.request, urllib.parse
 import numpy as np
 
 # Lazy imports
-_rembg = None
 _cv2 = None
-
-def _get_rembg():
-    global _rembg
-    if _rembg is None:
-        from rembg import remove as r
-        _rembg = r
-    return _rembg
 
 def _get_cv2():
     global _cv2
@@ -223,14 +215,32 @@ def _analyze_text_style(img_rgb, text_box, bg_samples):
 # ===================== 工具函数 =====================
 
 def cutout(inp, out):
-    from PIL import Image
-    import io
-    rembg = _get_rembg()
-    with open(inp, 'rb') as f:
-        result_bytes = rembg.remove(f.read())
-    img = Image.open(io.BytesIO(result_bytes)).convert('RGB')
-    img.save(out, 'JPEG', quality=95)
-    return {"success": True, "explanation": "✅ 抠图完成，已去除背景"}
+    """抠图 - 使用OpenCV GrabCut算法（轻量，无外部模型）"""
+    cv2 = _get_cv2()
+    img = cv2.imread(inp)
+    if img is None:
+        return {"error": "无法读取图片"}
+
+    h, w = img.shape[:2]
+    margin_x = int(w * 0.05)
+    margin_y = int(h * 0.05)
+    rect = (margin_x, margin_y, w - margin_x * 2, h - margin_y * 2)
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    bg_model = np.zeros((1, 65), dtype=np.float64)
+    fg_model = np.zeros((1, 65), dtype=np.float64)
+
+    cv2.grabCut(img, mask, rect, bg_model, fg_model, 5, cv2.GC_INIT_WITH_RECT)
+
+    mask2 = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype('uint8')
+    mask2 = cv2.medianBlur(mask2, 5)
+
+    white_bg = np.full_like(img, [255, 255, 255])
+    fg = cv2.bitwise_and(img, img, mask=mask2)
+    result = np.where(mask2[:, :, np.newaxis] > 0, fg, white_bg)
+
+    cv2.imwrite(out, result)
+    return {"success": True, "explanation": "✅ 抠图完成，已去除背景（GrabCut算法）"}
 
 
 def text_replace(inp, out, source_words, target_words):
